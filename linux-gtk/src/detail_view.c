@@ -1,5 +1,7 @@
 #include "detail_view.h"
 
+#include <adwaita.h>
+
 #include "health.h"
 #include "media.h"
 #include "paths.h"
@@ -53,7 +55,6 @@ struct _YtdlDetailView
 {
   GtkBox parent_instance;
 
-  GtkWidget *title;
   GtkWidget *subtitle;
   GtkWidget *summary;
   GtkWidget *badges;
@@ -172,7 +173,7 @@ static void
 add_badge (GtkWidget *box, const char *text, const char *css)
 {
   GtkWidget *l = gtk_label_new (text);
-  gtk_widget_add_css_class (l, "caption");
+  gtk_widget_add_css_class (l, "ytdl-pill");
   if (css != NULL)
     gtk_widget_add_css_class (l, css);
   gtk_box_append (GTK_BOX (box), l);
@@ -476,7 +477,13 @@ static GtkWidget *
 comment_widget (const YtdlComment *c, gboolean is_reply)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-  gtk_widget_set_margin_start (box, is_reply ? 24 : 0);
+  /* A rule down the left rather than an indent alone, so a long thread still
+   * reads as one conversation once the replies wrap. */
+  if (is_reply)
+    {
+      gtk_widget_set_margin_start (box, 24);
+      gtk_widget_add_css_class (box, "ytdl-reply");
+    }
   gtk_widget_set_margin_bottom (box, is_reply ? 4 : 10);
 
   GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
@@ -496,10 +503,10 @@ comment_widget (const YtdlComment *c, gboolean is_reply)
     {
       g_autofree char *n = format_count (c->like_count);
       g_autofree char *likes = g_strdup_printf ("%s likes", n);
-      add_badge (head, likes, "dim-label");
+      add_badge (head, likes, NULL);
     }
   if (c->time_text != NULL)
-    add_badge (head, c->time_text, "dim-label");
+    add_badge (head, c->time_text, NULL);
   gtk_box_append (GTK_BOX (box), head);
 
   GtkWidget *text = gtk_label_new (c->text);
@@ -616,9 +623,6 @@ render_files (YtdlDetailView *self, DetailData *d)
 static void
 render (YtdlDetailView *self, DetailData *d)
 {
-  gtk_label_set_text (GTK_LABEL (self->title),
-                      d->title != NULL ? d->title : "(untitled)");
-
   g_autofree char *date = format_date (d->upload_date);
   g_autofree char *sub =
       g_strdup_printf ("%s%s%s", d->uploader != NULL ? d->uploader : "",
@@ -630,11 +634,11 @@ render (YtdlDetailView *self, DetailData *d)
 
   clear_box (self->badges);
   if (d->layout_too_new)
-    add_badge (self->badges, "written with a newer archive layout", "warning");
+    add_badge (self->badges, "written with a newer archive layout", "warn");
   if (d->media_path == NULL)
     add_badge (self->badges,
                d->download_mode != NULL ? d->download_mode : "no media file",
-               "dim-label");
+               NULL);
 
   render_streams (self, d);
   render_meta (self, d);
@@ -826,7 +830,7 @@ ytdl_detail_view_show (YtdlDetailView *self, const YtdlEntry *entry)
   g_free (self->folder);
   self->folder = g_strdup (d->dir);
 
-  gtk_label_set_text (GTK_LABEL (self->title),
+  gtk_label_set_text (GTK_LABEL (self->subtitle),
                       entry->title != NULL ? entry->title : "(untitled)");
   gtk_label_set_text (GTK_LABEL (self->summary), "Reading…");
   gtk_label_set_text (GTK_LABEL (self->verify_result), "");
@@ -839,18 +843,28 @@ ytdl_detail_view_show (YtdlDetailView *self, const YtdlEntry *entry)
 
 /* ---------------------------------------------------------------------- */
 
+/* Clamped, because these are columns of text. Unclamped, a key/value row on a
+ * 1800px window puts the key at the left edge and the value 150px away with a
+ * metre of nothing after it, and a paragraph of description runs to a line
+ * length nobody can track back from. */
 static GtkWidget *
 scrolled_section (GtkWidget *child)
 {
+  gtk_widget_set_margin_start (child, 12);
+  gtk_widget_set_margin_end (child, 12);
+  gtk_widget_set_margin_top (child, 12);
+  gtk_widget_set_margin_bottom (child, 18);
+
+  GtkWidget *clamp = adw_clamp_new ();
+  adw_clamp_set_maximum_size (ADW_CLAMP (clamp), 860);
+  adw_clamp_set_tightening_threshold (ADW_CLAMP (clamp), 660);
+  adw_clamp_set_child (ADW_CLAMP (clamp), child);
+
   GtkWidget *s = gtk_scrolled_window_new ();
-  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (s), child);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (s), clamp);
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (s), GTK_POLICY_NEVER,
                                   GTK_POLICY_AUTOMATIC);
   gtk_widget_set_vexpand (s, TRUE);
-  gtk_widget_set_margin_start (child, 12);
-  gtk_widget_set_margin_end (child, 12);
-  gtk_widget_set_margin_top (child, 10);
-  gtk_widget_set_margin_bottom (child, 10);
   return s;
 }
 
@@ -882,25 +896,24 @@ ytdl_detail_view_init (YtdlDetailView *self)
   gtk_widget_set_margin_end (head, 12);
   gtk_widget_set_margin_top (head, 10);
 
+  /* NO TITLE LABEL HERE. The title is the AdwNavigationPage's, so it is in
+   * the header bar where a GNOME app puts it -- and where the back button,
+   * the page transition and the window title all agree with it. Repeating it
+   * in the content was the arrangement a hand-rolled stack needed. */
   GtkWidget *title_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-  self->title = gtk_label_new ("");
-  gtk_label_set_xalign (GTK_LABEL (self->title), 0.0f);
-  gtk_label_set_wrap (GTK_LABEL (self->title), TRUE);
-  gtk_label_set_selectable (GTK_LABEL (self->title), TRUE);
-  gtk_widget_set_hexpand (self->title, TRUE);
-  gtk_widget_add_css_class (self->title, "title-2");
-  gtk_box_append (GTK_BOX (title_row), self->title);
-
-  self->spinner = gtk_spinner_new ();
-  gtk_widget_set_visible (self->spinner, FALSE);
-  gtk_widget_set_valign (self->spinner, GTK_ALIGN_START);
-  gtk_box_append (GTK_BOX (title_row), self->spinner);
-  gtk_box_append (GTK_BOX (head), title_row);
 
   self->subtitle = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->subtitle), 0.0f);
-  gtk_widget_add_css_class (self->subtitle, "dim-label");
-  gtk_box_append (GTK_BOX (head), self->subtitle);
+  gtk_label_set_wrap (GTK_LABEL (self->subtitle), TRUE);
+  gtk_widget_set_hexpand (self->subtitle, TRUE);
+  gtk_widget_add_css_class (self->subtitle, "heading");
+  gtk_box_append (GTK_BOX (title_row), self->subtitle);
+
+  self->spinner = gtk_spinner_new ();
+  gtk_widget_set_visible (self->spinner, FALSE);
+  gtk_widget_set_valign (self->spinner, GTK_ALIGN_CENTER);
+  gtk_box_append (GTK_BOX (title_row), self->spinner);
+  gtk_box_append (GTK_BOX (head), title_row);
 
   self->summary = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->summary), 0.0f);
@@ -1006,27 +1019,76 @@ ytdl_detail_view_init (YtdlDetailView *self)
   gtk_box_append (GTK_BOX (tbox), self->transcript_note);
   gtk_box_append (GTK_BOX (tbox), self->transcript);
 
-  self->stack = gtk_stack_new ();
-  gtk_stack_add_titled (GTK_STACK (self->stack),
-                        scrolled_section (self->meta_box), "meta", "Details");
-  gtk_stack_add_titled (GTK_STACK (self->stack),
-                        scrolled_section (self->streams_box), "streams",
-                        "Media");
-  gtk_stack_add_titled (GTK_STACK (self->stack),
-                        scrolled_section (self->comments_box), "comments",
-                        "Comments");
-  gtk_stack_add_titled (GTK_STACK (self->stack), scrolled_section (tbox),
-                        "transcript", "Transcript");
-  gtk_stack_add_titled (GTK_STACK (self->stack),
-                        scrolled_section (self->files_box), "files", "Files");
+  /* AdwViewStack and AdwViewSwitcher, not the GTK pair.
+   *
+   * The switcher takes an icon per page as well as a label, and it collapses
+   * to icons on its own when the window is too narrow for five words -- which
+   * is the whole difference between a row of tabs that adapts and a row that
+   * clips. */
+  self->stack = adw_view_stack_new ();
+  adw_view_stack_add_titled_with_icon (
+      ADW_VIEW_STACK (self->stack), scrolled_section (self->meta_box), "meta",
+      "Details", "dialog-information-symbolic");
+  adw_view_stack_add_titled_with_icon (
+      ADW_VIEW_STACK (self->stack), scrolled_section (self->streams_box),
+      "streams", "Media", "media-playback-start-symbolic");
+  adw_view_stack_add_titled_with_icon (
+      ADW_VIEW_STACK (self->stack), scrolled_section (self->comments_box),
+      "comments", "Comments", "user-available-symbolic");
+  adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (self->stack),
+                                       scrolled_section (tbox), "transcript",
+                                       "Transcript",
+                                       "utilities-terminal-symbolic");
+  adw_view_stack_add_titled_with_icon (
+      ADW_VIEW_STACK (self->stack), scrolled_section (self->files_box),
+      "files", "Files", "folder-symbolic");
   gtk_widget_set_vexpand (self->stack, TRUE);
 
-  GtkWidget *switcher = gtk_stack_switcher_new ();
-  gtk_stack_switcher_set_stack (GTK_STACK_SWITCHER (switcher),
-                                GTK_STACK (self->stack));
-  gtk_widget_set_halign (switcher, GTK_ALIGN_START);
-  gtk_widget_set_margin_start (switcher, 12);
-  gtk_box_append (GTK_BOX (lower), switcher);
+  GtkWidget *switcher = adw_view_switcher_new ();
+  adw_view_switcher_set_stack (ADW_VIEW_SWITCHER (switcher),
+                               ADW_VIEW_STACK (self->stack));
+  adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher),
+                                ADW_VIEW_SWITCHER_POLICY_WIDE);
+
+  /* halign FILL, and this is not cosmetic. With halign CENTER the switcher
+   * gets its NATURAL width and is centred in it, so when five tabs want more
+   * room than the pane has it overflows and the last one is sliced through
+   * the middle of a glyph -- which is exactly what happened at 470px. Given
+   * the real allocation instead, it shrinks its items and ellipsises their
+   * labels, which is the behaviour it already had and was being denied.
+   *
+   * The clamp is what keeps FILL from stretching five tabs across a 1600px
+   * window: below 640 it fills, above it centres. */
+  gtk_widget_set_halign (switcher, GTK_ALIGN_FILL);
+
+  GtkWidget *switcher_clamp = adw_clamp_new ();
+  adw_clamp_set_maximum_size (ADW_CLAMP (switcher_clamp), 640);
+  adw_clamp_set_child (ADW_CLAMP (switcher_clamp), switcher);
+
+  /* AdwViewSwitcher does NOT adapt on its own -- WIDE and NARROW are two
+   * fixed layouts, and WIDE ellipsised to "Com…"/"Tran…" long before it had
+   * to. The window's own AdwBreakpoint cannot reach this widget: it is three
+   * pages down and does not know the window exists.
+   *
+   * AdwBreakpointBin is the answer -- a breakpoint scoped to a WIDGET,
+   * measured against this bin's own allocation. Below 620sp each icon stacks
+   * over its label, which fits all five down to about 560px -- the practical
+   * floor for this page, set by the player and the metadata rows rather than
+   * by the tabs. It needs an explicit minimum size for the same reason the
+   * window does: it has to know the smallest allocation it can be asked to
+   * lay out. */
+  GtkWidget *switcher_bin = adw_breakpoint_bin_new ();
+  gtk_widget_set_size_request (switcher_bin, 120, 42);
+  adw_breakpoint_bin_set_child (ADW_BREAKPOINT_BIN (switcher_bin),
+                                switcher_clamp);
+
+  AdwBreakpoint *narrow = adw_breakpoint_new (
+      adw_breakpoint_condition_parse ("max-width: 620sp"));
+  adw_breakpoint_add_setters (narrow, G_OBJECT (switcher), "policy",
+                              ADW_VIEW_SWITCHER_POLICY_NARROW, NULL);
+  adw_breakpoint_bin_add_breakpoint (ADW_BREAKPOINT_BIN (switcher_bin),
+                                     narrow);
+  gtk_box_append (GTK_BOX (lower), switcher_bin);
   gtk_box_append (GTK_BOX (lower), self->stack);
 }
 

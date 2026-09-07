@@ -2,6 +2,8 @@
 
 #include "paths.h"
 
+#include <adwaita.h>
+
 #include <string.h>
 
 /* ---------------------------------------------------------------------- */
@@ -151,21 +153,53 @@ static void
 on_setup_item (GtkSignalListItemFactory *factory, GtkListItem *item,
                gpointer user_data)
 {
-  GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  /* libadwaita's own .card -- background, radius, shadow and the way all
+   * three follow the system light/dark and accent settings. Nothing here
+   * paints a card; it asks for one.
+   *
+   * GTK_OVERFLOW_HIDDEN is what makes it a MEDIA card rather than a card with
+   * a picture in it: children are clipped to the rounded border, so the
+   * thumbnail's top corners are the card's corners and the image can run edge
+   * to edge instead of floating inside a margin. */
+  GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_set_size_request (card, THUMB_W, -1);
   gtk_widget_add_css_class (card, "card");
+  gtk_widget_set_overflow (card, GTK_OVERFLOW_HIDDEN);
+  gtk_widget_set_valign (card, GTK_ALIGN_START);
   gtk_widget_set_margin_start (card, 6);
   gtk_widget_set_margin_end (card, 6);
   gtk_widget_set_margin_top (card, 6);
   gtk_widget_set_margin_bottom (card, 6);
 
   /* A frame that is always THUMB_W x THUMB_H whether or not an image loads,
-   * so the grid does not reflow as thumbnails decode. */
+   * so the grid does not reflow as thumbnails decode. valign START stops the
+   * picture stretching to absorb the height of a neighbour whose title
+   * happens to wrap to two lines. */
   GtkWidget *thumb = gtk_picture_new ();
   gtk_widget_set_size_request (thumb, THUMB_W, THUMB_H);
+  gtk_widget_set_valign (thumb, GTK_ALIGN_START);
   gtk_picture_set_content_fit (GTK_PICTURE (thumb), GTK_CONTENT_FIT_COVER);
   gtk_widget_add_css_class (thumb, "ytdl-thumb");
-  gtk_box_append (GTK_BOX (card), thumb);
+
+  /* The duration belongs ON the thumbnail, where every video player and every
+   * video site puts it, not in the subtitle competing with the channel name
+   * and the date for the same run of small grey text. */
+  GtkWidget *duration = gtk_label_new (NULL);
+  gtk_widget_add_css_class (duration, "ytdl-duration");
+  gtk_widget_set_halign (duration, GTK_ALIGN_END);
+  gtk_widget_set_valign (duration, GTK_ALIGN_END);
+
+  GtkWidget *overlay = gtk_overlay_new ();
+  gtk_overlay_set_child (GTK_OVERLAY (overlay), thumb);
+  gtk_overlay_add_overlay (GTK_OVERLAY (overlay), duration);
+  gtk_box_append (GTK_BOX (card), overlay);
+
+  GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+  gtk_widget_set_margin_start (text, 10);
+  gtk_widget_set_margin_end (text, 10);
+  gtk_widget_set_margin_top (text, 10);
+  gtk_widget_set_margin_bottom (text, 10);
+  gtk_box_append (GTK_BOX (card), text);
 
   GtkWidget *title = gtk_label_new (NULL);
   gtk_label_set_xalign (GTK_LABEL (title), 0.0f);
@@ -173,19 +207,21 @@ on_setup_item (GtkSignalListItemFactory *factory, GtkListItem *item,
   gtk_label_set_lines (GTK_LABEL (title), 2);
   gtk_label_set_ellipsize (GTK_LABEL (title), PANGO_ELLIPSIZE_END);
   gtk_widget_add_css_class (title, "heading");
-  gtk_box_append (GTK_BOX (card), title);
+  gtk_box_append (GTK_BOX (text), title);
 
   GtkWidget *sub = gtk_label_new (NULL);
   gtk_label_set_xalign (GTK_LABEL (sub), 0.0f);
   gtk_label_set_ellipsize (GTK_LABEL (sub), PANGO_ELLIPSIZE_END);
   gtk_widget_add_css_class (sub, "dim-label");
   gtk_widget_add_css_class (sub, "caption");
-  gtk_box_append (GTK_BOX (card), sub);
+  gtk_box_append (GTK_BOX (text), sub);
 
   GtkWidget *badges = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-  gtk_box_append (GTK_BOX (card), badges);
+  gtk_widget_set_halign (badges, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (text), badges);
 
   g_object_set_data (G_OBJECT (card), "thumb", thumb);
+  g_object_set_data (G_OBJECT (card), "duration", duration);
   g_object_set_data (G_OBJECT (card), "title", title);
   g_object_set_data (G_OBJECT (card), "sub", sub);
   g_object_set_data (G_OBJECT (card), "badges", badges);
@@ -197,7 +233,7 @@ static void
 add_badge (GtkWidget *box, const char *text, const char *css)
 {
   GtkWidget *label = gtk_label_new (text);
-  gtk_widget_add_css_class (label, "caption");
+  gtk_widget_add_css_class (label, "ytdl-pill");
   if (css != NULL)
     gtk_widget_add_css_class (label, css);
   gtk_box_append (GTK_BOX (box), label);
@@ -216,6 +252,7 @@ on_bind_item (GtkSignalListItemFactory *factory, GtkListItem *item,
   const YtdlEntry *e = obj->entry;
 
   GtkWidget *thumb = g_object_get_data (G_OBJECT (card), "thumb");
+  GtkWidget *duration = g_object_get_data (G_OBJECT (card), "duration");
   GtkWidget *title = g_object_get_data (G_OBJECT (card), "title");
   GtkWidget *sub = g_object_get_data (G_OBJECT (card), "sub");
   GtkWidget *badges = g_object_get_data (G_OBJECT (card), "badges");
@@ -225,12 +262,16 @@ on_bind_item (GtkSignalListItemFactory *factory, GtkListItem *item,
 
   gtk_label_set_text (GTK_LABEL (title), e->title != NULL ? e->title : "");
 
-  g_autofree char *date = format_upload_date (e->upload_date);
+  /* Hidden rather than blank when there is no duration: an empty badge is a
+   * black smudge in the corner of the thumbnail. */
   g_autofree char *dur = format_duration (e->duration);
+  gtk_label_set_text (GTK_LABEL (duration), dur);
+  gtk_widget_set_visible (duration, dur != NULL && *dur != '\0');
+
+  g_autofree char *date = format_upload_date (e->upload_date);
   g_autofree char *subtitle = g_strdup_printf (
-      "%s%s%s%s%s", e->uploader != NULL ? e->uploader : "",
-      (date != NULL && *date != '\0') ? " · " : "", date,
-      (dur != NULL && *dur != '\0') ? " · " : "", dur);
+      "%s%s%s", e->uploader != NULL ? e->uploader : "",
+      (date != NULL && *date != '\0') ? " · " : "", date);
   gtk_label_set_text (GTK_LABEL (sub), subtitle);
 
   /* Rebuild the badge row: the card is recycled, so last video's badges are
@@ -246,10 +287,10 @@ on_bind_item (GtkSignalListItemFactory *factory, GtkListItem *item,
        * run. Saying which is the manifest's job, not a guess from here. */
       const char *why = e->download_mode != NULL ? e->download_mode
                                                  : "no media file";
-      add_badge (badges, why, "dim-label");
+      add_badge (badges, why, NULL);
     }
   if (e->layout_too_new)
-    add_badge (badges, "newer archive layout", "warning");
+    add_badge (badges, "newer archive layout", "warn");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -393,13 +434,20 @@ ytdl_library_view_init (YtdlLibraryView *self)
                                  self->grid);
   gtk_widget_set_vexpand (self->scroller, TRUE);
 
-  self->empty = gtk_label_new ("No videos to show yet.\n\n"
-                               "Point Settings at the same path you would "
-                               "pass to `ytdl --path`, then press Rescan.");
-  gtk_label_set_justify (GTK_LABEL (self->empty), GTK_JUSTIFY_CENTER);
-  gtk_widget_add_css_class (self->empty, "dim-label");
+  /* AdwStatusPage rather than a centred label: it is the widget every GNOME
+   * application uses for this, so the icon size, the type scale, the maximum
+   * text width and the vertical centring are all the ones the rest of the
+   * desktop uses rather than three guesses made here. */
+  self->empty = adw_status_page_new ();
+  adw_status_page_set_icon_name (ADW_STATUS_PAGE (self->empty),
+                                 "folder-videos-symbolic");
+  adw_status_page_set_title (ADW_STATUS_PAGE (self->empty),
+                             "Nothing to show");
+  adw_status_page_set_description (
+      ADW_STATUS_PAGE (self->empty),
+      "Point the app at the same path you would pass to <tt>ytdl --path</tt>, "
+      "then press Rescan. If a search is active, no video matches it.");
   gtk_widget_set_vexpand (self->empty, TRUE);
-  gtk_widget_set_valign (self->empty, GTK_ALIGN_CENTER);
 
   self->stack = gtk_stack_new ();
   gtk_stack_add_named (GTK_STACK (self->stack), self->scroller, "grid");

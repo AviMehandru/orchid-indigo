@@ -1,9 +1,16 @@
 # ytdl-gtk — the Linux native app
 
-A GTK4 front end for the yt-dlp archival pipeline, written in C.
+A GNOME front end for the yt-dlp archival pipeline, written in C against GTK4
+and libadwaita.
 
-**No Rust, no webview, no bundled runtime.** Three system libraries that a
-GNOME desktop already has: GTK4, GLib and json-glib.
+**No Rust, no webview, no bundled runtime.** Four system libraries that a
+GNOME desktop already has: GTK4, libadwaita, GLib and json-glib.
+
+libadwaita is not a theme. It is GNOME's own widget set on top of GTK4 — the
+boxed lists, preference rows, status pages, adaptive header bars and
+breakpoints every GNOME application is built from. Using it is the difference
+between looking like a GNOME app and looking like a GTK app someone styled by
+hand.
 
 This is one of three standalone native apps in this repository (GTK4/C here,
 SwiftUI on macOS, WinUI 3 on Windows). They share no code by design — see the
@@ -12,14 +19,21 @@ SwiftUI on macOS, WinUI 3 on Windows). They share no code by design — see the
 ## Build
 
 ```
-sudo apt install libgtk-4-dev libjson-glib-dev meson ninja-build
+sudo apt install libgtk-4-dev libadwaita-1-dev libjson-glib-dev \
+                 meson ninja-build
 meson setup build
 meson compile -C build
 meson test -C build
 ./build/ytdl-gtk
 ```
 
-Fedora: `sudo dnf install gtk4-devel json-glib-devel meson ninja-build`.
+Fedora: `sudo dnf install gtk4-devel libadwaita-devel json-glib-devel meson
+ninja-build`.
+
+Needs GTK 4.12 and libadwaita 1.5, which is Ubuntu 24.04 LTS, Debian 13,
+Fedora 40 and anything newer. The libadwaita floor is 1.5 rather than 1.4
+because 1.4's `AdwMessageDialog` is deprecated in 1.6 — with `-Werror` that is
+not a soft warning, it is a build that fails on a newer distro.
 
 Built with `-Werror`. The compiler is most of what replaces a borrow checker
 in a C codebase, so its output is not advisory.

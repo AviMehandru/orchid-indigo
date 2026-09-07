@@ -1,4 +1,4 @@
-/* ytdl-gtk -- a native GTK4 front end for the yt-dlp archival pipeline.
+/* ytdl-gtk -- a native GNOME front end for the yt-dlp archival pipeline.
  *
  * WHAT THIS IS NOT: a reimplementation of the pipeline. Downloads are started
  * by handing a command line to the installed ytdl.ps1, exactly as a terminal
@@ -8,11 +8,19 @@
  * implementation of docs/archive-layout.md, and the price of three standalone
  * apps sharing no engine. tests/test_archive.c is what keeps it honest.
  *
- * No Rust, no webview, no bundled runtime -- GTK4, GLib and json-glib, all of
- * which a GNOME desktop already has.
+ * No Rust, no webview, no bundled runtime -- GTK4, libadwaita, GLib and
+ * json-glib, all of which a GNOME desktop already has.
+ *
+ * THE SHELL IS LIBADWAITA'S, NOT HAND-BUILT. AdwNavigationView owns
+ * library-to-detail, which is where the back button, the gesture, the
+ * animation and the Escape key all come from; AdwViewStack plus
+ * AdwViewSwitcher own the three top-level pages; AdwToolbarView owns the
+ * header, the search bar and the status line and the way they behave as the
+ * content scrolls under them. An AdwBreakpoint moves the switcher to the
+ * bottom on a narrow window. None of that is code here.
  */
 
-#include <gtk/gtk.h>
+#include <adwaita.h>
 
 #include "archive.h"
 #include "detail_view.h"
@@ -22,6 +30,7 @@
 #include "paths.h"
 #include "pipeline.h"
 #include "settings.h"
+#include "style.h"
 
 typedef struct
 {
@@ -29,12 +38,19 @@ typedef struct
   GtkWidget *library;
   GtkWidget *health;
   GtkWidget *detail;
-  GtkWidget *library_stack; /* library <-> detail, inside the Library page */
-  GtkWidget *back;
+
+  GtkWidget *header;      /* AdwHeaderBar of the main page */
+  GtkWidget *switcher_bar;/* AdwViewSwitcherBar, revealed when narrow */
+  GtkWidget *nav;         /* AdwNavigationView: main <-> detail */
+  GtkWidget *detail_page; /* AdwNavigationPage wrapping the detail view */
+  GtkWidget *stack;       /* AdwViewStack: library / downloads / health */
+  GtkWidget *toasts;      /* AdwToastOverlay */
 
   YtdlSettings *settings;
   YtdlRunner   *runner;
+  GtkWidget *search_bar;
   GtkWidget *search;
+  GtkWidget *search_button;
   GtkWidget *rescan;
   GtkWidget *status;
   GtkWidget *spinner;
@@ -60,14 +76,21 @@ typedef struct
   char      *error;
 } ScanResult;
 
-/* Defined below, next to the rest of the navigation. Declared here because
- * the scan-finished handler needs it and sits above it. */
-static void show_library (App *app);
-
 static void
 set_status (App *app, const char *text)
 {
   gtk_label_set_text (GTK_LABEL (app->status), text);
+}
+
+/* Errors go to a toast as well as the status line. The status line is a
+ * quiet, permanent readout that people stop seeing; a scan that found no
+ * archive at all needs to interrupt once. */
+static void
+toast (App *app, const char *text)
+{
+  AdwToast *t = adw_toast_new (text);
+  adw_toast_set_timeout (t, 6);
+  adw_toast_overlay_add_toast (ADW_TOAST_OVERLAY (app->toasts), t);
 }
 
 static void
@@ -155,6 +178,7 @@ on_scan_finished (gpointer user_data)
        * with no explanation is the exact outcome the layout contract exists
        * to prevent, and the same rule applies to not finding one at all. */
       set_status (app, res->error);
+      toast (app, res->error);
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library), NULL);
       if (app->health != NULL)
         ytdl_health_view_set_index (YTDL_HEALTH_VIEW (app->health), NULL);
@@ -166,8 +190,9 @@ on_scan_finished (gpointer user_data)
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library), NULL);
       /* The detail page borrows nothing from the index once loaded -- it
        * copied what it needed -- but it may still be showing a video that no
-       * longer exists, so a rescan returns to the grid. */
-      show_library (app);
+       * longer exists, so a rescan returns to the grid. Popping also stops
+       * playback, through the "popped" handler. */
+      adw_navigation_view_pop_to_tag (ADW_NAVIGATION_VIEW (app->nav), "main");
       g_clear_pointer (&app->index, ytdl_index_free);
       app->index = g_steal_pointer (&res->index);
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library),
@@ -211,10 +236,13 @@ start_scan (App *app)
 
   if (app->archive_root == NULL)
     {
-      set_status (app,
-                  "Could not find an archive. Looked for 'Youtube Videos/"
-                  "Complete Archive' under the usual locations. Pass "
-                  "--archive-root, or set YTDLP_INSTALL_ROOT.");
+      const char *msg =
+          "Could not find an archive. Looked for 'Youtube Videos/Complete "
+          "Archive' under the usual locations. Pass --archive-root, or set "
+          "YTDLP_INSTALL_ROOT.";
+      set_status (app, msg);
+      toast (app, "No archive found. Pass --archive-root or set "
+                  "YTDLP_INSTALL_ROOT.");
       return;
     }
 
@@ -234,30 +262,20 @@ start_scan (App *app)
 }
 
 /* ---------------------------------------------------------------------- */
-/* UI                                                                     */
+/* Navigation                                                             */
 /* ---------------------------------------------------------------------- */
 
+/* Fires for every way out of the detail page: the back button, the Escape
+ * key, the back mouse button, the edge-swipe gesture, and pop_to_tag above.
+ * Hanging the teardown on the signal rather than on the back button is the
+ * whole reason the navigation view is worth using -- a GtkVideo left holding
+ * a file keeps its GStreamer pipeline alive, and audio continuing after Back
+ * is the kind of thing people remember about an application. */
 static void
-on_rescan_clicked (GtkButton *button, gpointer user_data)
+on_popped (AdwNavigationView *nav, AdwNavigationPage *page, gpointer user_data)
 {
-  start_scan (user_data);
-}
-
-static void
-show_library (App *app)
-{
-  /* Clearing the detail view stops playback. A GtkVideo left holding a file
-   * keeps its GStreamer pipeline alive, and audio continuing after Back is
-   * the kind of thing people remember about an application. */
+  App *app = user_data;
   ytdl_detail_view_clear (YTDL_DETAIL_VIEW (app->detail));
-  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "library");
-  gtk_widget_set_visible (app->back, FALSE);
-}
-
-static void
-on_back (GtkButton *b, gpointer user_data)
-{
-  show_library (user_data);
 }
 
 /* The grid hands over the opaque KEY, not the entry, so the lookup happens
@@ -275,19 +293,26 @@ on_video_activated (GtkWidget *view, const char *key, gpointer user_data)
     return;
 
   ytdl_detail_view_show (YTDL_DETAIL_VIEW (app->detail), entry);
-  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "detail");
-  gtk_widget_set_visible (app->back, TRUE);
+  adw_navigation_page_set_title (
+      ADW_NAVIGATION_PAGE (app->detail_page),
+      entry->title != NULL && *entry->title != '\0' ? entry->title : "Video");
+  adw_navigation_view_push_by_tag (ADW_NAVIGATION_VIEW (app->nav), "detail");
 }
 
-/* Leaving the Library tab entirely also stops playback. */
+/* Search filters the library and nothing else, so the button that reveals it
+ * is only offered on the library page. Leaving it enabled everywhere would
+ * put a search entry over the Downloads form that silently does nothing. */
 static void
 on_page_changed (GObject *stack, GParamSpec *pspec, gpointer user_data)
 {
   App *app = user_data;
   const char *name =
-      gtk_stack_get_visible_child_name (GTK_STACK (stack));
-  if (g_strcmp0 (name, "library") != 0)
-    show_library (app);
+      adw_view_stack_get_visible_child_name (ADW_VIEW_STACK (stack));
+  gboolean on_library = g_strcmp0 (name, "library") == 0;
+
+  gtk_widget_set_visible (app->search_button, on_library);
+  if (!on_library)
+    gtk_search_bar_set_search_mode (GTK_SEARCH_BAR (app->search_bar), FALSE);
 }
 
 static void
@@ -300,23 +325,128 @@ on_search_changed (GtkSearchEntry *entry, gpointer user_data)
 }
 
 static void
-load_css (void)
+on_rescan_clicked (GtkButton *button, gpointer user_data)
 {
-  static const char *css =
-      ".ytdl-thumb {"
-      "  background: alpha(currentColor, 0.08);"
-      "  border-radius: 8px;"
-      "}"
-      ".card {"
-      "  border-radius: 10px;"
-      "  padding: 6px;"
-      "}";
+  start_scan (user_data);
+}
 
-  g_autoptr (GtkCssProvider) provider = gtk_css_provider_new ();
-  gtk_css_provider_load_from_string (provider, css);
-  gtk_style_context_add_provider_for_display (
-      gdk_display_get_default (), GTK_STYLE_PROVIDER (provider),
-      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+/* ---------------------------------------------------------------------- */
+/* Construction                                                           */
+/* ---------------------------------------------------------------------- */
+
+static GtkWidget *
+build_main_page (App *app)
+{
+  GtkWidget *header = adw_header_bar_new ();
+  app->header = header;
+
+  app->rescan = gtk_button_new_from_icon_name ("view-refresh-symbolic");
+  gtk_widget_set_tooltip_text (app->rescan, "Rescan the archive");
+  g_signal_connect (app->rescan, "clicked", G_CALLBACK (on_rescan_clicked),
+                    app);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), app->rescan);
+
+  app->spinner = gtk_spinner_new ();
+  gtk_widget_set_visible (app->spinner, FALSE);
+  adw_header_bar_pack_start (ADW_HEADER_BAR (header), app->spinner);
+
+  app->search_button = gtk_toggle_button_new ();
+  gtk_button_set_icon_name (GTK_BUTTON (app->search_button),
+                            "system-search-symbolic");
+  gtk_widget_set_tooltip_text (app->search_button,
+                               "Search the library (Ctrl+F)");
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->search_button);
+
+  /* --- the three pages -------------------------------------------- */
+  app->stack = adw_view_stack_new ();
+
+  app->library = ytdl_library_view_new ();
+  g_signal_connect (app->library, "video-activated",
+                    G_CALLBACK (on_video_activated), app);
+  adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
+                                       app->library, "library", "Library",
+                                       "view-grid-symbolic");
+
+  GtkWidget *downloads = ytdl_downloads_view_new (app->runner, app->settings);
+  adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack), downloads,
+                                       "downloads", "Downloads",
+                                       "folder-download-symbolic");
+
+  app->health = ytdl_health_view_new (app->settings);
+  adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
+                                       app->health, "health", "Health",
+                                       "applications-utilities-symbolic");
+
+  g_signal_connect (app->stack, "notify::visible-child",
+                    G_CALLBACK (on_page_changed), app);
+
+  GtkWidget *switcher = adw_view_switcher_new ();
+  adw_view_switcher_set_stack (ADW_VIEW_SWITCHER (switcher),
+                               ADW_VIEW_STACK (app->stack));
+  adw_view_switcher_set_policy (ADW_VIEW_SWITCHER (switcher),
+                                ADW_VIEW_SWITCHER_POLICY_WIDE);
+  adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), switcher);
+
+  /* --- search ------------------------------------------------------ */
+  app->search = gtk_search_entry_new ();
+  gtk_widget_set_hexpand (app->search, TRUE);
+  gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (app->search),
+                                         "Search title, channel or id");
+  g_signal_connect (app->search, "search-changed",
+                    G_CALLBACK (on_search_changed), app);
+
+  app->search_bar = gtk_search_bar_new ();
+  gtk_search_bar_set_child (GTK_SEARCH_BAR (app->search_bar), app->search);
+  gtk_search_bar_connect_entry (GTK_SEARCH_BAR (app->search_bar),
+                                GTK_EDITABLE (app->search));
+  /* Two-way, so Escape inside the bar un-toggles the button as well. */
+  g_object_bind_property (app->search_button, "active", app->search_bar,
+                          "search-mode-enabled",
+                          G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+
+  /* --- status line ------------------------------------------------- */
+  app->status = gtk_label_new ("Starting…");
+  gtk_label_set_xalign (GTK_LABEL (app->status), 0.0f);
+  gtk_label_set_ellipsize (GTK_LABEL (app->status), PANGO_ELLIPSIZE_END);
+  gtk_widget_add_css_class (app->status, "dim-label");
+  gtk_widget_add_css_class (app->status, "caption");
+
+  GtkWidget *status_bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (status_bar, "toolbar");
+  gtk_box_append (GTK_BOX (status_bar), app->status);
+
+  app->switcher_bar = adw_view_switcher_bar_new ();
+  adw_view_switcher_bar_set_stack (ADW_VIEW_SWITCHER_BAR (app->switcher_bar),
+                                   ADW_VIEW_STACK (app->stack));
+
+  /* --- assembly ---------------------------------------------------- */
+  GtkWidget *toolbar = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), header);
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), app->search_bar);
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), app->stack);
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar), status_bar);
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar),
+                                   app->switcher_bar);
+
+  AdwNavigationPage *page =
+      adw_navigation_page_new (toolbar, "yt-dlp Archive");
+  adw_navigation_page_set_tag (page, "main");
+  return GTK_WIDGET (page);
+}
+
+static GtkWidget *
+build_detail_page (App *app)
+{
+  app->detail = ytdl_detail_view_new ();
+
+  GtkWidget *toolbar = adw_toolbar_view_new ();
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar),
+                                adw_header_bar_new ());
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), app->detail);
+
+  AdwNavigationPage *page = adw_navigation_page_new (toolbar, "Video");
+  adw_navigation_page_set_tag (page, "detail");
+  return GTK_WIDGET (page);
 }
 
 static void
@@ -324,87 +454,54 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
 {
   App *app = user_data;
 
-  load_css ();
+  ytdl_style_load ();
 
-  app->window = gtk_application_window_new (gtkapp);
+  app->window = adw_application_window_new (gtkapp);
   gtk_window_set_title (GTK_WINDOW (app->window), "yt-dlp Archive");
   gtk_window_set_default_size (GTK_WINDOW (app->window), 1180, 880);
+  /* AdwBreakpoint refuses to work without one, and says so on stderr: it has
+   * to know the smallest size the window can take before it can decide which
+   * conditions are reachable. 360x300 is the phone-sized floor the breakpoint
+   * below is written for. */
+  gtk_widget_set_size_request (app->window, 360, 300);
 
-  GtkWidget *header = gtk_header_bar_new ();
-  gtk_window_set_titlebar (GTK_WINDOW (app->window), header);
+  GtkWidget *main_page = build_main_page (app);
+  app->detail_page = build_detail_page (app);
 
-  app->back = gtk_button_new_from_icon_name ("go-previous-symbolic");
-  gtk_widget_set_tooltip_text (app->back, "Back to the library");
-  gtk_widget_set_visible (app->back, FALSE);
-  g_signal_connect (app->back, "clicked", G_CALLBACK (on_back), app);
-  gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app->back);
+  app->nav = adw_navigation_view_new ();
+  adw_navigation_view_add (ADW_NAVIGATION_VIEW (app->nav),
+                           ADW_NAVIGATION_PAGE (main_page));
+  adw_navigation_view_add (ADW_NAVIGATION_VIEW (app->nav),
+                           ADW_NAVIGATION_PAGE (app->detail_page));
+  g_signal_connect (app->nav, "popped", G_CALLBACK (on_popped), app);
 
-  app->rescan = gtk_button_new_from_icon_name ("view-refresh-symbolic");
-  gtk_widget_set_tooltip_text (app->rescan, "Rescan the archive");
-  g_signal_connect (app->rescan, "clicked", G_CALLBACK (on_rescan_clicked),
-                    app);
-  gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app->rescan);
+  app->toasts = adw_toast_overlay_new ();
+  adw_toast_overlay_set_child (ADW_TOAST_OVERLAY (app->toasts), app->nav);
+  adw_application_window_set_content (
+      ADW_APPLICATION_WINDOW (app->window), app->toasts);
 
-  app->spinner = gtk_spinner_new ();
-  gtk_widget_set_visible (app->spinner, FALSE);
-  gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app->spinner);
+  /* Ctrl+F and plain typing both open the search bar, which is what every
+   * other GNOME application does. Capture is on the window, so it works
+   * wherever the focus happens to be. */
+  gtk_search_bar_set_key_capture_widget (GTK_SEARCH_BAR (app->search_bar),
+                                         app->window);
 
-  app->search = gtk_search_entry_new ();
-  gtk_widget_set_size_request (app->search, 260, -1);
-  gtk_search_entry_set_placeholder_text (GTK_SEARCH_ENTRY (app->search),
-                                         "Search title, channel or id");
-  g_signal_connect (app->search, "search-changed",
-                    G_CALLBACK (on_search_changed), app);
-  gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app->search);
+  /* Below 600sp three labelled switcher buttons no longer fit in a header
+   * bar. The switcher moves to a bar at the bottom and the header falls back
+   * to its own AdwWindowTitle -- which is what setting title-widget to its
+   * default (NULL) means. Two setters, and every pane reflows: the grid drops
+   * to two columns, the preference groups keep their measure, and nothing
+   * else in this file knows the window can be narrow. */
+  AdwBreakpoint *bp = adw_breakpoint_new (
+      adw_breakpoint_condition_parse ("max-width: 600sp"));
+  adw_breakpoint_add_setters (bp,
+                              G_OBJECT (app->switcher_bar), "reveal", TRUE,
+                              G_OBJECT (app->header), "title-widget", NULL,
+                              NULL);
+  adw_application_window_add_breakpoint (
+      ADW_APPLICATION_WINDOW (app->window), bp);
 
-  app->library = ytdl_library_view_new ();
-  app->detail = ytdl_detail_view_new ();
-  g_signal_connect (app->library, "video-activated",
-                    G_CALLBACK (on_video_activated), app);
-
-  app->library_stack = gtk_stack_new ();
-  gtk_stack_add_named (GTK_STACK (app->library_stack), app->library, "library");
-  gtk_stack_add_named (GTK_STACK (app->library_stack), app->detail, "detail");
-  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "library");
-
-  GtkWidget *stack = gtk_stack_new ();
-  gtk_stack_set_transition_type (GTK_STACK (stack),
-                                 GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-  gtk_stack_add_titled (GTK_STACK (stack), app->library_stack, "library",
-                        "Library");
-  g_signal_connect (stack, "notify::visible-child",
-                    G_CALLBACK (on_page_changed), app);
-
-  GtkWidget *downloads =
-      ytdl_downloads_view_new (app->runner, app->settings);
-  gtk_stack_add_titled (GTK_STACK (stack), downloads, "downloads", "Downloads");
-
-  app->health = ytdl_health_view_new (app->settings);
-  gtk_stack_add_titled (GTK_STACK (stack), app->health, "health", "Health");
-
-  GtkWidget *switcher = gtk_stack_switcher_new ();
-  gtk_stack_switcher_set_stack (GTK_STACK_SWITCHER (switcher),
-                                GTK_STACK (stack));
-  gtk_header_bar_set_title_widget (GTK_HEADER_BAR (header), switcher);
-
-  app->status = gtk_label_new ("Starting…");
-  gtk_label_set_xalign (GTK_LABEL (app->status), 0.0f);
-  gtk_label_set_wrap (GTK_LABEL (app->status), TRUE);
-  gtk_widget_add_css_class (app->status, "dim-label");
-  gtk_widget_add_css_class (app->status, "caption");
-  gtk_widget_set_margin_start (app->status, 12);
-  gtk_widget_set_margin_end (app->status, 12);
-  gtk_widget_set_margin_top (app->status, 6);
-  gtk_widget_set_margin_bottom (app->status, 6);
-
-  GtkWidget *root = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-  gtk_box_append (GTK_BOX (root), stack);
-  gtk_box_append (GTK_BOX (root),
-                  gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
-  gtk_box_append (GTK_BOX (root), app->status);
-  gtk_widget_set_vexpand (stack, TRUE);
-
-  gtk_window_set_child (GTK_WINDOW (app->window), root);
+  on_page_changed (G_OBJECT (app->stack), NULL, app);
   gtk_window_present (GTK_WINDOW (app->window));
 
   /* The worker starts only once the window it will emit into is real, which
@@ -454,14 +551,18 @@ main (int argc, char **argv)
     g_printerr ("No 'Complete Archive' found under %s -- starting empty.\n",
                 archive_root);
 
-  g_autoptr (GtkApplication) gtkapp =
-      gtk_application_new ("io.github.avimehandru.YtdlGtk",
+  /* AdwApplication rather than GtkApplication: it is what calls adw_init(),
+   * loads libadwaita's stylesheet and connects the app to the system
+   * light/dark and accent-colour settings. An AdwApplicationWindow inside a
+   * plain GtkApplication is undefined behaviour, not a shortcut. */
+  g_autoptr (AdwApplication) adwapp =
+      adw_application_new ("io.github.avimehandru.YtdlGtk",
                            G_APPLICATION_DEFAULT_FLAGS);
-  g_signal_connect (gtkapp, "activate", G_CALLBACK (on_activate), &app);
+  g_signal_connect (adwapp, "activate", G_CALLBACK (on_activate), &app);
 
-  /* argv is deliberately not forwarded: GtkApplication would try to parse
+  /* argv is deliberately not forwarded: GApplication would try to parse
    * --archive-root itself and refuse it. */
-  int status = g_application_run (G_APPLICATION (gtkapp), 0, NULL);
+  int status = g_application_run (G_APPLICATION (adwapp), 0, NULL);
 
   /* Stop the worker BEFORE the index goes: a run finishing during teardown
    * would otherwise touch state that has already been freed. */

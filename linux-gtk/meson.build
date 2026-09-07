@@ -25,12 +25,24 @@ project('ytdl-gtk', 'c',
 # nested objects. Writing a JSON parser to avoid a GNOME-platform dependency
 # that ships on every target distro would be trading a real risk for an
 # imaginary one.
-gtk    = dependency('gtk4',          version : '>= 4.10')
+#
+# libadwaita is GNOME's own widget set on top of GTK4 -- the boxed lists,
+# preference rows, status pages and adaptive header bars that every GNOME
+# application is built from. It is not a theme: using it is what makes this
+# look like a GNOME app rather than a GTK app someone styled by hand.
+#
+# >= 1.5 is the floor because 1.5 is what Ubuntu 24.04 LTS ships, and because
+# AdwAlertDialog arrived in it. The 1.4 alternative, AdwMessageDialog, is
+# deprecated in 1.6 -- with -Werror that is not a soft warning, it is a build
+# that fails on Debian 13 and Fedora 41. Requiring 1.5 and using the current
+# API is the version floor that does not rot.
+gtk    = dependency('gtk4',          version : '>= 4.12')
+adw    = dependency('libadwaita-1',  version : '>= 1.5')
 jsonc  = dependency('json-glib-1.0', version : '>= 1.6')
 glib   = dependency('glib-2.0',      version : '>= 2.74')
 gio    = dependency('gio-2.0',       version : '>= 2.74')
 
-deps = [gtk, jsonc, glib, gio]
+deps = [gtk, adw, jsonc, glib, gio]
 
 # -Werror with warning_level=3 is deliberate for a C codebase reimplementing
 # logic that used to be memory-safe. The compiler is most of what replaces the
@@ -66,6 +78,7 @@ executable('ytdl-gtk',
     'src/downloads_view.c',
     'src/health_view.c',
     'src/detail_view.c',
+    'src/style.c',
   ),
   dependencies : deps,
   link_with : core,

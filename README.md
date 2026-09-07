@@ -7,7 +7,7 @@ per platform, each written in that platform's own language and toolkit.
 
 | Platform | Toolkit | Language | Status |
 |---|---|---|---|
-| Linux | GTK4 | C | foundation working |
+| Linux | GTK4 + libadwaita | C | working |
 | macOS | SwiftUI | Swift | not started |
 | Windows | WinUI 3 | C# | not started |
 
