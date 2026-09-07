@@ -1,0 +1,43 @@
+# The pipeline these apps are built against.
+#
+# This file is the whole reason a THIRD repository is safe rather than
+# merely tidy. None of these apps vendors a copy of the pipeline -- each
+# shells out to the installed `ytdl` and reads the archive
+# `postprocess.ps1` writes -- so "which pipeline do these expect" has to
+# have an answer that is written down, not inferred from whatever happened
+# to be on the machine.
+#
+# Plain KEY=VALUE so bash, PowerShell, a shell script and a C test can all
+# parse it without a library.
+
+# Where the pipeline lives.
+CLI_REPO=AviMehandru/orchid-ochre
+
+# Which ref of it to install. A TAG is the point of this file; `main` means
+# "whatever was pushed most recently", which is exactly the version skew
+# this pin exists to remove. Set it to a tag as soon as one exists, and bump
+# it deliberately after testing against that tag.
+CLI_REF=main
+
+# The archive layout version (docs/archive-layout.md in the pipeline repo)
+# every app in this repository knows how to read.
+#
+# ONE NUMBER, ALL THREE APPS. That is deliberate. Letting the GTK, SwiftUI
+# and WinUI apps each pin their own would mean three answers to "which
+# layout does this project read", and the first symptom of them disagreeing
+# is one platform's library coming up empty while the others are fine --
+# which is the hardest possible version of this bug to diagnose.
+#
+# Each app asserts this number against its own constant in its own test
+# suite, so the copies cannot drift apart silently:
+#
+#   linux-gtk   YTDL_SUPPORTED_ARCHIVE_LAYOUT in src/archive.h,
+#               checked by tests/test_archive.c
+#   macos       (not built yet)
+#   windows     (not built yet)
+#
+# Raise this only after EVERY app in this repo has been updated to read the
+# newer layout, and after each one's conformance suite passes against a
+# fixture in the new shape. Raising it first is how you get a green build
+# that lies.
+REQUIRES_ARCHIVE_LAYOUT=2
