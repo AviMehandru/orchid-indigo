@@ -14,6 +14,10 @@ static const char *const AUDIO_EXTS[] = { ".m4a", ".opus", ".mp3", ".flac",
                                           ".ogg", ".wav",  ".aac", NULL };
 static const char *const IMAGE_EXTS[] = { ".png",  ".jpg", ".jpeg",
                                           ".webp", ".gif", ".avif", NULL };
+/* --write-subs and --write-auto-subs both land in Subtitles/; the container
+ * formats yt-dlp can be asked for are these. */
+static const char *const SUB_EXTS[] = { ".vtt", ".srt", ".ass",
+                                        ".ssa", ".sub", ".lrc", NULL };
 
 static gboolean
 ext_in (const char *const *set, const char *ext)
@@ -781,4 +785,543 @@ ytdl_index_stats (const YtdlIndex *index, gsize *videos, gsize *channels,
         }
       *bytes = total;
     }
+}
+
+/* ---------------------------------------------------------------------- */
+/* info.json                                                              */
+/* ---------------------------------------------------------------------- */
+
+YtdlInfo *
+ytdl_entry_load_info (const YtdlEntry *entry)
+{
+  g_return_val_if_fail (entry != NULL, NULL);
+
+  g_autofree char *meta_dir =
+      g_build_filename (entry->dir, "Video metadata", NULL);
+  g_autoptr (GDir) d = g_dir_open (meta_dir, 0, NULL);
+  if (d == NULL)
+    return NULL;
+
+  g_autofree char *found = NULL;
+  const char *name;
+  while ((name = g_dir_read_name (d)) != NULL)
+    if (g_str_has_suffix (name, ".info.json"))
+      {
+        found = g_build_filename (meta_dir, name, NULL);
+        break;
+      }
+  if (found == NULL)
+    return NULL;
+
+  JsonParser *parser = json_parser_new ();
+  if (!json_parser_load_from_file (parser, found, NULL))
+    {
+      g_object_unref (parser);
+      return NULL;
+    }
+  JsonNode *root = json_parser_get_root (parser);
+  if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
+    {
+      g_object_unref (parser);
+      return NULL;
+    }
+
+  YtdlInfo *info = g_new0 (YtdlInfo, 1);
+  info->parser = parser;
+  info->root = json_node_get_object (root);
+  return info;
+}
+
+void
+ytdl_info_free (YtdlInfo *info)
+{
+  if (info == NULL)
+    return;
+  g_clear_object (&info->parser);
+  g_free (info);
+}
+
+char *
+ytdl_info_string (const YtdlInfo *info, const char *key)
+{
+  if (info == NULL)
+    return NULL;
+  return string_member (info->root, key);
+}
+
+gint64
+ytdl_info_int (const YtdlInfo *info, const char *key)
+{
+  if (info == NULL)
+    return 0;
+  return int_member (info->root, key, 0);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Comments                                                               */
+/* ---------------------------------------------------------------------- */
+
+gboolean
+ytdl_ext_is_subtitle (const char *ext)
+{
+  return ext_in (SUB_EXTS, ext);
+}
+
+void
+ytdl_comment_free (gpointer data)
+{
+  YtdlComment *c = data;
+  if (c == NULL)
+    return;
+  g_free (c->id);
+  g_free (c->text);
+  g_free (c->author);
+  g_free (c->author_id);
+  g_free (c->time_text);
+  g_clear_pointer (&c->replies, g_ptr_array_unref);
+  g_free (c);
+}
+
+static gboolean
+bool_member (JsonObject *obj, const char *key)
+{
+  if (obj == NULL || !json_object_has_member (obj, key))
+    return FALSE;
+  JsonNode *n = json_object_get_member (obj, key);
+  if (!JSON_NODE_HOLDS_VALUE (n))
+    return FALSE;
+  if (json_node_get_value_type (n) != G_TYPE_BOOLEAN)
+    return FALSE;
+  return json_node_get_boolean (n);
+}
+
+static YtdlComment *
+comment_from (JsonObject *o)
+{
+  YtdlComment *c = g_new0 (YtdlComment, 1);
+  c->id = string_member (o, "id");
+  c->text = string_member (o, "text");
+  c->author = string_member (o, "author");
+  c->author_id = string_member (o, "author_id");
+  c->time_text = string_member (o, "_time_text");
+  c->timestamp = int_member (o, "timestamp", -1);
+  c->like_count = int_member (o, "like_count", -1);
+  c->is_favorited = bool_member (o, "is_favorited");
+  c->author_is_uploader = bool_member (o, "author_is_uploader");
+  c->is_pinned = bool_member (o, "is_pinned");
+  c->replies = g_ptr_array_new_with_free_func (ytdl_comment_free);
+
+  if (c->id == NULL)
+    c->id = g_strdup ("");
+  if (c->text == NULL)
+    c->text = g_strdup ("");
+  if (c->author == NULL)
+    c->author = g_strdup ("(unknown)");
+  return c;
+}
+
+static int
+reply_cmp (gconstpointer a, gconstpointer b)
+{
+  const YtdlComment *x = *(YtdlComment *const *) a;
+  const YtdlComment *y = *(YtdlComment *const *) b;
+  gint64 xa = x->timestamp < 0 ? 0 : x->timestamp;
+  gint64 ya = y->timestamp < 0 ? 0 : y->timestamp;
+  return (xa > ya) - (xa < ya);
+}
+
+/* Pinned first, then most-liked. The same order YouTube itself shows, which
+ * matters because a transcript of a comment section in arbitrary order is a
+ * different document from the one people actually read. */
+static int
+top_cmp (gconstpointer a, gconstpointer b)
+{
+  const YtdlComment *x = *(YtdlComment *const *) a;
+  const YtdlComment *y = *(YtdlComment *const *) b;
+  if (x->is_pinned != y->is_pinned)
+    return y->is_pinned - x->is_pinned;
+  gint64 xl = x->like_count < 0 ? 0 : x->like_count;
+  gint64 yl = y->like_count < 0 ? 0 : y->like_count;
+  return (yl > xl) - (yl < xl);
+}
+
+GPtrArray *
+ytdl_thread_comments (JsonArray *raw)
+{
+  GPtrArray *tops = g_ptr_array_new_with_free_func (ytdl_comment_free);
+  if (raw == NULL)
+    return tops;
+
+  /* id -> index into tops. Borrowed keys: each points at its comment's own
+   * id, which outlives the table. */
+  g_autoptr (GHashTable) index = g_hash_table_new (g_str_hash, g_str_equal);
+  g_autoptr (GPtrArray) orphan_parents = g_ptr_array_new_with_free_func (g_free);
+  g_autoptr (GPtrArray) orphan_comments = g_ptr_array_new (); /* moved out */
+
+  for (guint i = 0; i < json_array_get_length (raw); i++)
+    {
+      JsonNode *n = json_array_get_element (raw, i);
+      if (!JSON_NODE_HOLDS_OBJECT (n))
+        continue;
+      JsonObject *o = json_node_get_object (n);
+
+      g_autofree char *parent = string_member (o, "parent");
+      YtdlComment *c = comment_from (o);
+
+      if (parent == NULL || *parent == '\0' || g_strcmp0 (parent, "root") == 0)
+        {
+          g_hash_table_insert (index, c->id, GUINT_TO_POINTER (tops->len));
+          g_ptr_array_add (tops, c);
+        }
+      else
+        {
+          g_ptr_array_add (orphan_parents, g_steal_pointer (&parent));
+          g_ptr_array_add (orphan_comments, c);
+        }
+    }
+
+  for (guint i = 0; i < orphan_comments->len; i++)
+    {
+      const char *parent = g_ptr_array_index (orphan_parents, i);
+      YtdlComment *c = g_ptr_array_index (orphan_comments, i);
+
+      gpointer slot = NULL;
+      gboolean found = g_hash_table_lookup_extended (index, parent, NULL, &slot);
+      if (!found)
+        {
+          /* yt-dlp's reply ids are "<parent>.<reply>", so the parent id is
+           * recoverable even when the parent field itself is unhelpful. */
+          const char *dot = strchr (parent, '.');
+          if (dot != NULL)
+            {
+              g_autofree char *head = g_strndup (parent, (gsize) (dot - parent));
+              found = g_hash_table_lookup_extended (index, head, NULL, &slot);
+            }
+        }
+
+      if (found)
+        {
+          YtdlComment *top = g_ptr_array_index (tops, GPOINTER_TO_UINT (slot));
+          g_ptr_array_add (top->replies, c);
+        }
+      else
+        {
+          /* A reply whose parent is genuinely absent -- a deleted comment, or
+           * a truncated fetch -- is shown at top level rather than dropped.
+           * Silently losing archived text would be the worse failure. */
+          g_ptr_array_add (tops, c);
+        }
+    }
+
+  for (guint i = 0; i < tops->len; i++)
+    {
+      YtdlComment *t = g_ptr_array_index (tops, i);
+      g_ptr_array_sort (t->replies, reply_cmp);
+    }
+  g_ptr_array_sort (tops, top_cmp);
+  return tops;
+}
+
+GPtrArray *
+ytdl_info_comments (const YtdlInfo *info)
+{
+  if (info == NULL || !json_object_has_member (info->root, "comments"))
+    return g_ptr_array_new_with_free_func (ytdl_comment_free);
+
+  JsonNode *n = json_object_get_member (info->root, "comments");
+  if (!JSON_NODE_HOLDS_ARRAY (n))
+    return g_ptr_array_new_with_free_func (ytdl_comment_free);
+
+  return ytdl_thread_comments (json_node_get_array (n));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Transcript                                                             */
+/* ---------------------------------------------------------------------- */
+
+void
+ytdl_cue_free (gpointer data)
+{
+  YtdlCue *c = data;
+  if (c == NULL)
+    return;
+  g_free (c->text);
+  g_free (c);
+}
+
+/* [hh:]mm:ss[.,]mmm -- leading run of digits, colons and a decimal mark. */
+static gboolean
+parse_ts (const char *text, double *out)
+{
+  if (text == NULL)
+    return FALSE;
+  while (*text == ' ' || *text == '\t')
+    text++;
+
+  gsize end = 0;
+  while (text[end] != '\0' &&
+         (g_ascii_isdigit (text[end]) || text[end] == ':' ||
+          text[end] == '.' || text[end] == ','))
+    end++;
+  if (end == 0)
+    return FALSE;
+
+  g_autofree char *t = g_strndup (text, end);
+  char *mark = strpbrk (t, ".,");
+  g_autofree char *frac = mark != NULL ? g_strdup (mark + 1) : g_strdup ("");
+  if (mark != NULL)
+    *mark = '\0';
+
+  g_auto (GStrv) parts = g_strsplit (t, ":", -1);
+  gsize n = g_strv_length (parts);
+  double h = 0, m = 0, s = 0;
+  if (n == 3)
+    {
+      h = g_ascii_strtod (parts[0], NULL);
+      m = g_ascii_strtod (parts[1], NULL);
+      s = g_ascii_strtod (parts[2], NULL);
+    }
+  else if (n == 2)
+    {
+      m = g_ascii_strtod (parts[0], NULL);
+      s = g_ascii_strtod (parts[1], NULL);
+    }
+  else
+    {
+      return FALSE;
+    }
+
+  /* ".5" is 500ms, not 5ms -- pad on the RIGHT to three digits. */
+  double ms = 0;
+  if (*frac != '\0')
+    {
+      char padded[4] = { '0', '0', '0', '\0' };
+      for (gsize i = 0; i < 3 && frac[i] != '\0'; i++)
+        padded[i] = frac[i];
+      ms = g_ascii_strtod (padded, NULL);
+    }
+
+  *out = h * 3600.0 + m * 60.0 + s + ms / 1000.0;
+  return TRUE;
+}
+
+/* Removes <c>, </c>, <v Name>, and the per-word <00:00:01.234> karaoke
+ * timestamps YouTube's ASR emits. A hand-rolled scanner rather than a regex
+ * dependency: the grammar is "everything between < and >". */
+static char *
+strip_inline_tags (const char *s)
+{
+  GString *out = g_string_sized_new (strlen (s));
+  gsize depth = 0;
+  for (const char *p = s; *p; p++)
+    {
+      if (*p == '<')
+        depth++;
+      else if (*p == '>')
+        {
+          if (depth > 0)
+            depth--;
+        }
+      else if (depth == 0)
+        g_string_append_c (out, *p);
+    }
+  return g_string_free (out, FALSE);
+}
+
+static char *
+unescape_entities (const char *s)
+{
+  static const char *const from[] = { "&amp;", "&lt;",  "&gt;",
+                                      "&quot;", "&#39;", "&nbsp;", NULL };
+  static const char *const to[] = { "&", "<", ">", "\"", "'", " ", NULL };
+
+  char *cur = g_strdup (s);
+  for (gsize i = 0; from[i] != NULL; i++)
+    {
+      g_auto (GStrv) split = g_strsplit (cur, from[i], -1);
+      char *next = g_strjoinv (to[i], split);
+      g_free (cur);
+      cur = next;
+    }
+  return cur;
+}
+
+static char *
+collapse_ws (const char *s)
+{
+  g_auto (GStrv) parts = g_strsplit_set (s, " \t\n\r", -1);
+  GString *out = g_string_new (NULL);
+  for (gsize i = 0; parts[i] != NULL; i++)
+    {
+      if (parts[i][0] == '\0')
+        continue;
+      if (out->len > 0)
+        g_string_append_c (out, ' ');
+      g_string_append (out, parts[i]);
+    }
+  return g_string_free (out, FALSE);
+}
+
+GPtrArray *
+ytdl_parse_subtitle_cues (const char *path)
+{
+  GPtrArray *out = g_ptr_array_new_with_free_func (ytdl_cue_free);
+
+  char *raw = NULL;
+  if (!g_file_get_contents (path, &raw, NULL, NULL))
+    return out;
+
+  /* Normalise line endings first: a .vtt written on Windows would otherwise
+   * never match the blank-line block separator. */
+  g_autofree char *normalised = NULL;
+  {
+    g_auto (GStrv) a = g_strsplit (raw, "\r\n", -1);
+    g_autofree char *j = g_strjoinv ("\n", a);
+    g_auto (GStrv) b = g_strsplit (j, "\r", -1);
+    normalised = g_strjoinv ("\n", b);
+  }
+  g_free (raw);
+
+  g_autoptr (GPtrArray) cues = g_ptr_array_new_with_free_func (ytdl_cue_free);
+  g_auto (GStrv) blocks = g_strsplit (normalised, "\n\n", -1);
+
+  for (gsize b = 0; blocks[b] != NULL; b++)
+    {
+      g_auto (GStrv) all = g_strsplit (blocks[b], "\n", -1);
+
+      /* Borrowed pointers to the non-blank lines. Compacting `all` in place
+       * would leave duplicates in its tail for g_strfreev to free twice. */
+      g_autoptr (GPtrArray) lines = g_ptr_array_new ();
+      for (gsize i = 0; all[i] != NULL; i++)
+        {
+          g_autofree char *probe = g_strdup (all[i]);
+          if (*g_strstrip (probe) != '\0')
+            g_ptr_array_add (lines, all[i]);
+        }
+      if (lines->len == 0)
+        continue;
+
+      gssize time_idx = -1;
+      for (guint i = 0; i < lines->len; i++)
+        if (strstr (g_ptr_array_index (lines, i), "-->") != NULL)
+          {
+            time_idx = (gssize) i;
+            break;
+          }
+      if (time_idx < 0)
+        continue;
+
+      const char *timeline = g_ptr_array_index (lines, time_idx);
+      const char *arrow = strstr (timeline, "-->");
+      g_autofree char *left = g_strndup (timeline, (gsize) (arrow - timeline));
+
+      double start = 0, end = 0;
+      if (!parse_ts (left, &start))
+        continue;
+      if (!parse_ts (arrow + 3, &end))
+        end = start + 3.0;
+
+      GString *body = g_string_new (NULL);
+      for (guint i = (guint) time_idx + 1; i < lines->len; i++)
+        {
+          if (body->len > 0)
+            g_string_append_c (body, ' ');
+          g_string_append (body, g_ptr_array_index (lines, i));
+        }
+
+      g_autofree char *stripped = strip_inline_tags (body->str);
+      g_string_free (body, TRUE);
+      g_autofree char *unescaped = unescape_entities (stripped);
+      char *text = collapse_ws (unescaped);
+
+      if (*text == '\0')
+        {
+          g_free (text);
+          continue;
+        }
+
+      YtdlCue *c = g_new0 (YtdlCue, 1);
+      c->start = start;
+      c->end = end;
+      c->text = text;
+      g_ptr_array_add (cues, c);
+    }
+
+  /* The rolling-display collapse.
+   *
+   * The comparison is against the previous cue's FULL text, not against what
+   * was last emitted. That distinction is the whole algorithm:
+   *
+   *   cue 1  "the quick brown fox"
+   *   cue 2  "the quick brown fox jumps over"
+   *   cue 3  "the quick brown fox jumps over the lazy dog"
+   *
+   * Emitting the tail of cue 2 puts "jumps over" in the output. Comparing cue
+   * 3 against THAT finds no common prefix, so cue 3 is emitted whole and the
+   * duplication the collapse exists to remove comes straight back on the third
+   * line. Keeping last_full separate from the output is what makes the third
+   * line "the lazy dog".
+   */
+  const char *last_full = NULL;
+  for (guint i = 0; i < cues->len; i++)
+    {
+      YtdlCue *cue = g_ptr_array_index (cues, i);
+      YtdlCue *emitted = out->len > 0 ? g_ptr_array_index (out, out->len - 1) : NULL;
+
+      if (last_full != NULL && emitted != NULL)
+        {
+          if (g_strcmp0 (cue->text, last_full) == 0)
+            {
+              emitted->end = MAX (emitted->end, cue->end);
+              continue;
+            }
+          /* The 12-character floor keeps a genuinely repeated short line
+           * ("Yeah." then "Yeah. Right.") from being chopped into fragments. */
+          if (g_str_has_prefix (cue->text, last_full) &&
+              g_utf8_strlen (last_full, -1) > 12)
+            {
+              g_autofree char *tail = g_strdup (cue->text + strlen (last_full));
+              g_strstrip (tail);
+              if (*tail == '\0')
+                {
+                  emitted->end = MAX (emitted->end, cue->end);
+                }
+              else
+                {
+                  YtdlCue *c = g_new0 (YtdlCue, 1);
+                  c->start = cue->start;
+                  c->end = cue->end;
+                  c->text = g_strdup (tail);
+                  g_ptr_array_add (out, c);
+                }
+              last_full = cue->text;
+              continue;
+            }
+        }
+
+      YtdlCue *c = g_new0 (YtdlCue, 1);
+      c->start = cue->start;
+      c->end = cue->end;
+      c->text = g_strdup (cue->text);
+      g_ptr_array_add (out, c);
+      last_full = cue->text;
+    }
+
+  return out;
+}
+
+gboolean
+ytdl_subtitle_is_auto (const char *path)
+{
+  char *raw = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents (path, &raw, &len, NULL))
+    return FALSE;
+
+  /* Only the head matters, and these files can be large. */
+  g_autofree char *head = g_strndup (raw, MIN (len, 8000));
+  g_free (raw);
+
+  return strstr (head, "<c.") != NULL || strstr (head, "<c>") != NULL ||
+         strstr (head, "align:start position:") != NULL;
 }

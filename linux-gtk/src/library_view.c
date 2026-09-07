@@ -69,6 +69,14 @@ struct _YtdlLibraryView
 
 G_DEFINE_FINAL_TYPE (YtdlLibraryView, ytdl_library_view, GTK_TYPE_BOX)
 
+enum
+{
+  SIG_VIDEO_ACTIVATED,
+  N_SIGNALS
+};
+
+static guint signals[N_SIGNALS];
+
 #define THUMB_W 240
 #define THUMB_H 135
 
@@ -337,6 +345,22 @@ static void
 ytdl_library_view_class_init (YtdlLibraryViewClass *klass)
 {
   G_OBJECT_CLASS (klass)->dispose = ytdl_library_view_dispose;
+
+  signals[SIG_VIDEO_ACTIVATED] =
+      g_signal_new ("video-activated", G_TYPE_FROM_CLASS (klass),
+                    G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
+                    G_TYPE_STRING);
+}
+
+static void
+on_grid_activate (GtkGridView *grid, guint position, gpointer user_data)
+{
+  YtdlLibraryView *self = user_data;
+  g_autoptr (YtdlVideoObject) obj =
+      g_list_model_get_item (G_LIST_MODEL (self->store), position);
+  if (obj == NULL || obj->entry == NULL)
+    return;
+  g_signal_emit (self, signals[SIG_VIDEO_ACTIVATED], 0, obj->entry->key);
 }
 
 static void
@@ -359,6 +383,8 @@ ytdl_library_view_init (YtdlLibraryView *self)
   self->grid = gtk_grid_view_new (selection, factory);
   gtk_grid_view_set_max_columns (GTK_GRID_VIEW (self->grid), 8);
   gtk_grid_view_set_min_columns (GTK_GRID_VIEW (self->grid), 1);
+  gtk_grid_view_set_single_click_activate (GTK_GRID_VIEW (self->grid), FALSE);
+  g_signal_connect (self->grid, "activate", G_CALLBACK (on_grid_activate), self);
 
   self->scroller = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (self->scroller),

@@ -506,6 +506,9 @@ test_pin_matches_supported_layout (void)
  * in their own file but run from this one binary. */
 void ytdl_register_pipeline_tests (void);
 
+/* Defined in test_detail.c -- comment threading and the transcript parser. */
+void ytdl_register_detail_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -536,6 +539,7 @@ main (int argc, char **argv)
                    test_pin_matches_supported_layout);
 
   ytdl_register_pipeline_tests ();
+  ytdl_register_detail_tests ();
 
   return g_test_run ();
 }

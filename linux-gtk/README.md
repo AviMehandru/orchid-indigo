@@ -54,11 +54,34 @@ tree.
 is in a checkout), `CONFIG_VERSION`, archive counts, and the tail of
 `download.log` / `archive.txt`.
 
+**Video detail** — activate a card in the Library to open it. An embedded
+player that plays the **original** file (see below), the container's real
+stream details from ffprobe, description and metadata, the comment tree
+threaded back into conversations, the subtitle track as a readable transcript,
+the file inventory, and a checksum verify.
+
+### The player plays the original file
+
+The Tauri app remuxes `.mkv` to WebM into a cache directory before it can show
+you anything, because a browser engine cannot play Matroska. This one hands
+GStreamer the archived file. Nothing is transcoded, nothing is written, and
+what you watch is the bytes that were downloaded.
+
+Playback needs a GStreamer media backend — on Debian/Ubuntu:
+
+```
+sudo apt install libgtk-4-media-gstreamer gstreamer1.0-plugins-good \
+                 gstreamer1.0-plugins-bad gstreamer1.0-libav
+```
+
+Without it the page says so and points you at mpv rather than showing a black
+rectangle. Stream details need `ffprobe`, which the pipeline already requires;
+without it that one section explains its absence and the rest still works.
+
 ## What is not built yet
 
-Video detail (the per-video page with comments, subtitles and playback), and
-option profiles. Playback is deliberately not planned as an embedded player:
-"Open in mpv" is the better answer on Linux and costs nothing.
+Option profiles — named sets of download options. Everything else the Tauri
+app does is here.
 
 ## The conformance test
 

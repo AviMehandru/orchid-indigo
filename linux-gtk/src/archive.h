@@ -25,6 +25,7 @@
 #define YTDL_ARCHIVE_H
 
 #include <glib.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -122,6 +123,91 @@ char *ytdl_entry_path_for_index (const YtdlEntry *entry, gsize idx);
  * a missing info.json and the conformance test pins it directly. */
 gboolean ytdl_parse_folder_name (const char *name, char **uploader,
                                  char **upload_date, char **id, char **title);
+
+/* ---------------------------------------------------------------------- */
+/* info.json, comments, transcript                                        */
+/* ---------------------------------------------------------------------- */
+/*
+ * Read ON DEMAND, when a video's page is opened -- never during the scan.
+ * info.json carries the full comment tree and routinely runs to several
+ * megabytes; parsing every one of them to draw a grid of thumbnails would
+ * make opening the app cost what opening every video costs.
+ */
+
+typedef struct
+{
+  JsonParser *parser; /* owns the tree */
+  JsonObject *root;   /* borrowed from @parser */
+} YtdlInfo;
+
+/* NULL when there is no readable info.json -- an ordinary state the layout
+ * contract names, not an error. */
+YtdlInfo *ytdl_entry_load_info (const YtdlEntry *entry);
+void      ytdl_info_free (YtdlInfo *info);
+
+/* A string/number member of the info.json root, or NULL/0. */
+char  *ytdl_info_string (const YtdlInfo *info, const char *key);
+gint64 ytdl_info_int (const YtdlInfo *info, const char *key);
+
+typedef struct
+{
+  char      *id;
+  char      *text;
+  char      *author;
+  char      *author_id;
+  char      *time_text;
+  gint64     timestamp;  /* -1 when absent */
+  gint64     like_count; /* -1 when absent */
+  gboolean   is_favorited;
+  gboolean   author_is_uploader;
+  gboolean   is_pinned;
+  GPtrArray *replies; /* YtdlComment*, owned */
+} YtdlComment;
+
+void ytdl_comment_free (gpointer comment);
+
+/* Thread yt-dlp's flat comment list.
+ *
+ * yt-dlp writes comments as a FLAT array with a `parent` field that is either
+ * "root" or the parent's id, IN NO GUARANTEED ORDER -- a reply can appear
+ * before its parent, so this is a two-pass job rather than a fold. Exposed
+ * separately from the file reading so the tests can pin the shape directly. */
+GPtrArray *ytdl_thread_comments (JsonArray *raw); /* YtdlComment*, owned */
+
+/* The threaded comments from a loaded info.json. Empty when the video was
+ * fetched with --no-comments, which is ordinary. */
+GPtrArray *ytdl_info_comments (const YtdlInfo *info);
+
+typedef struct
+{
+  double start;
+  double end;
+  char  *text;
+} YtdlCue;
+
+void ytdl_cue_free (gpointer cue);
+
+/* A .vtt or .srt turned into a readable transcript.
+ *
+ * YouTube's auto-generated VTT is a ROLLING TWO-LINE DISPLAY: nearly every cue
+ * repeats the previous cue's last line, and words carry inline karaoke
+ * timestamps. Read as-is it is unusable as prose, so tags are stripped and the
+ * repetition is collapsed. */
+GPtrArray *ytdl_parse_subtitle_cues (const char *path); /* YtdlCue*, owned */
+
+/* Whether an extension (lowercased, with the leading dot, as YtdlFile stores
+ * it) names a subtitle file. A predicate rather than an exported array: the
+ * extension sets are an implementation detail and callers only ever ask this
+ * one question about them. */
+gboolean ytdl_ext_is_subtitle (const char *ext);
+
+/* The filenames cannot tell an auto-generated track from a human-written one
+ * -- --write-subs and --write-auto-subs both land in Subtitles/ under the same
+ * base name. The CONTENTS can: ASR output carries per-word karaoke tags and
+ * cue-positioning directives that uploaded tracks do not. */
+gboolean ytdl_subtitle_is_auto (const char *path);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (YtdlInfo, ytdl_info_free)
 
 G_END_DECLS
 

@@ -32,6 +32,13 @@ void ytdl_library_view_set_filter (YtdlLibraryView *self, const char *needle);
 /* How many videos are showing after the filter. */
 guint ytdl_library_view_get_shown (YtdlLibraryView *self);
 
+/* Signal: "video-activated" (const char *key)
+ *
+ * Emitted when a card is activated -- double-click or Enter, GTK's convention
+ * for "open this". Carries the opaque key rather than the entry, so a handler
+ * cannot end up holding a pointer into an index a rescan has since replaced;
+ * it looks the key up again against whatever index is current. */
+
 G_END_DECLS
 
 #endif /* YTDL_LIBRARY_VIEW_H */

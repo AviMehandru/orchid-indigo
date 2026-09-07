@@ -15,6 +15,7 @@
 #include <gtk/gtk.h>
 
 #include "archive.h"
+#include "detail_view.h"
 #include "downloads_view.h"
 #include "health_view.h"
 #include "library_view.h"
@@ -27,6 +28,9 @@ typedef struct
   GtkWidget *window;
   GtkWidget *library;
   GtkWidget *health;
+  GtkWidget *detail;
+  GtkWidget *library_stack; /* library <-> detail, inside the Library page */
+  GtkWidget *back;
 
   YtdlSettings *settings;
   YtdlRunner   *runner;
@@ -55,6 +59,10 @@ typedef struct
   YtdlIndex *index;
   char      *error;
 } ScanResult;
+
+/* Defined below, next to the rest of the navigation. Declared here because
+ * the scan-finished handler needs it and sits above it. */
+static void show_library (App *app);
 
 static void
 set_status (App *app, const char *text)
@@ -156,6 +164,10 @@ on_scan_finished (gpointer user_data)
     {
       /* Clear the view's borrowed pointers BEFORE freeing the old index. */
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library), NULL);
+      /* The detail page borrows nothing from the index once loaded -- it
+       * copied what it needed -- but it may still be showing a video that no
+       * longer exists, so a rescan returns to the grid. */
+      show_library (app);
       g_clear_pointer (&app->index, ytdl_index_free);
       app->index = g_steal_pointer (&res->index);
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library),
@@ -232,6 +244,53 @@ on_rescan_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+show_library (App *app)
+{
+  /* Clearing the detail view stops playback. A GtkVideo left holding a file
+   * keeps its GStreamer pipeline alive, and audio continuing after Back is
+   * the kind of thing people remember about an application. */
+  ytdl_detail_view_clear (YTDL_DETAIL_VIEW (app->detail));
+  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "library");
+  gtk_widget_set_visible (app->back, FALSE);
+}
+
+static void
+on_back (GtkButton *b, gpointer user_data)
+{
+  show_library (user_data);
+}
+
+/* The grid hands over the opaque KEY, not the entry, so the lookup happens
+ * against whatever index is current -- a rescan that finished between the
+ * click and this handler cannot leave a dangling pointer. */
+static void
+on_video_activated (GtkWidget *view, const char *key, gpointer user_data)
+{
+  App *app = user_data;
+  if (app->index == NULL)
+    return;
+
+  const YtdlEntry *entry = ytdl_index_get (app->index, key);
+  if (entry == NULL)
+    return;
+
+  ytdl_detail_view_show (YTDL_DETAIL_VIEW (app->detail), entry);
+  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "detail");
+  gtk_widget_set_visible (app->back, TRUE);
+}
+
+/* Leaving the Library tab entirely also stops playback. */
+static void
+on_page_changed (GObject *stack, GParamSpec *pspec, gpointer user_data)
+{
+  App *app = user_data;
+  const char *name =
+      gtk_stack_get_visible_child_name (GTK_STACK (stack));
+  if (g_strcmp0 (name, "library") != 0)
+    show_library (app);
+}
+
+static void
 on_search_changed (GtkSearchEntry *entry, gpointer user_data)
 {
   App *app = user_data;
@@ -274,6 +333,12 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
   GtkWidget *header = gtk_header_bar_new ();
   gtk_window_set_titlebar (GTK_WINDOW (app->window), header);
 
+  app->back = gtk_button_new_from_icon_name ("go-previous-symbolic");
+  gtk_widget_set_tooltip_text (app->back, "Back to the library");
+  gtk_widget_set_visible (app->back, FALSE);
+  g_signal_connect (app->back, "clicked", G_CALLBACK (on_back), app);
+  gtk_header_bar_pack_start (GTK_HEADER_BAR (header), app->back);
+
   app->rescan = gtk_button_new_from_icon_name ("view-refresh-symbolic");
   gtk_widget_set_tooltip_text (app->rescan, "Rescan the archive");
   g_signal_connect (app->rescan, "clicked", G_CALLBACK (on_rescan_clicked),
@@ -293,11 +358,22 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
   gtk_header_bar_pack_end (GTK_HEADER_BAR (header), app->search);
 
   app->library = ytdl_library_view_new ();
+  app->detail = ytdl_detail_view_new ();
+  g_signal_connect (app->library, "video-activated",
+                    G_CALLBACK (on_video_activated), app);
+
+  app->library_stack = gtk_stack_new ();
+  gtk_stack_add_named (GTK_STACK (app->library_stack), app->library, "library");
+  gtk_stack_add_named (GTK_STACK (app->library_stack), app->detail, "detail");
+  gtk_stack_set_visible_child_name (GTK_STACK (app->library_stack), "library");
 
   GtkWidget *stack = gtk_stack_new ();
   gtk_stack_set_transition_type (GTK_STACK (stack),
                                  GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-  gtk_stack_add_titled (GTK_STACK (stack), app->library, "library", "Library");
+  gtk_stack_add_titled (GTK_STACK (stack), app->library_stack, "library",
+                        "Library");
+  g_signal_connect (stack, "notify::visible-child",
+                    G_CALLBACK (on_page_changed), app);
 
   GtkWidget *downloads =
       ytdl_downloads_view_new (app->runner, app->settings);
