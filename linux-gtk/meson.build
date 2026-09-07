@@ -52,6 +52,7 @@ core_sources = files(
   'src/health.c',
   'src/settings.c',
   'src/media.c',
+  'src/profiles.c',
 )
 
 core = static_library('ytdlcore', core_sources,
@@ -83,7 +84,8 @@ executable('ytdl-gtk',
 cli_version = meson.project_source_root() / '..' / 'CLI_VERSION'
 
 test_archive = executable('test-archive',
-  files('tests/test_archive.c', 'tests/test_pipeline.c', 'tests/test_detail.c'),
+  files('tests/test_archive.c', 'tests/test_pipeline.c', 'tests/test_detail.c',
+        'tests/test_profiles.c'),
   c_args : ['-DYTDL_CLI_VERSION_PATH="' + cli_version + '"'],
   dependencies : deps,
   link_with : core,

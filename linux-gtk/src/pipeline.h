@@ -26,6 +26,7 @@
 #define YTDL_PIPELINE_H
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -92,6 +93,15 @@ GStrv ytdl_run_options_to_args (const YtdlRunOptions *opts);
  * because a GUI that hides the command it runs makes the CLI harder to learn
  * rather than easier. */
 char *ytdl_run_options_command_preview (const YtdlRunOptions *opts);
+
+/* Serialise and restore a whole option set.
+ *
+ * Shared with profiles.c, which stores exactly a YtdlRunOptions. Every field
+ * is optional on read, so a profile or a queued run written before an option
+ * existed still loads and simply does not set it. */
+void            ytdl_run_options_build_json (JsonBuilder *b,
+                                             const YtdlRunOptions *opts);
+YtdlRunOptions *ytdl_run_options_from_json (JsonObject *obj);
 
 /* A bare video id becomes a watch URL; anything already URL-shaped is left
  * exactly as typed. Deliberately not a validator -- ytdl.ps1 has its own

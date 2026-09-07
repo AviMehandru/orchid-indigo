@@ -592,8 +592,11 @@ state_file (const char *name)
   return g_build_filename (dir, name, NULL);
 }
 
-static void
-build_options (JsonBuilder *b, const YtdlRunOptions *o)
+/* Public so profiles.c can reuse it. There is deliberately NO second list of
+ * profileable fields anywhere: a field added to YtdlRunOptions becomes
+ * profileable by being added here, and there is no other place to forget. */
+void
+ytdl_run_options_build_json (JsonBuilder *b, const YtdlRunOptions *o)
 {
   json_builder_begin_object (b);
 #define S(k, v)                                                               \
@@ -652,8 +655,8 @@ build_options (JsonBuilder *b, const YtdlRunOptions *o)
  * build simply does not set what it did not know about, which is the C
  * equivalent of the Rust side's #[serde(default)] -- and the reason a profile
  * or a queued run survives an upgrade instead of failing the whole file. */
-static YtdlRunOptions *
-parse_options (JsonObject *obj)
+YtdlRunOptions *
+ytdl_run_options_from_json (JsonObject *obj)
 {
   YtdlRunOptions *o = ytdl_run_options_new ();
   if (obj == NULL)
@@ -746,7 +749,7 @@ build_record (JsonBuilder *b, const YtdlRunRecord *r)
   json_builder_set_member_name (b, "last_line");
   json_builder_add_string_value (b, r->last_line != NULL ? r->last_line : "");
   json_builder_set_member_name (b, "opts");
-  build_options (b, r->opts);
+  ytdl_run_options_build_json (b, r->opts);
   json_builder_end_object (b);
 }
 
@@ -791,7 +794,7 @@ parse_record (JsonObject *obj)
       if (JSON_NODE_HOLDS_OBJECT (n))
         opts = json_node_get_object (n);
     }
-  r->opts = parse_options (opts);
+  r->opts = ytdl_run_options_from_json (opts);
 
   if (r->id == NULL)
     r->id = g_strdup ("");

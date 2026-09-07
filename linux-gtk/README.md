@@ -78,10 +78,14 @@ Without it the page says so and points you at mpv rather than showing a black
 rectangle. Stream details need `ffprobe`, which the pipeline already requires;
 without it that one section explains its absence and the rest still works.
 
+**Profiles** — a named set of options, saved and restored across restarts.
+Selecting one applies its options and **leaves the URL alone**; the URL is
+never stored, on the way in or out, because a preset that replaced what you
+were about to download would be the one thing a preset must never do.
+
 ## What is not built yet
 
-Option profiles — named sets of download options. Everything else the Tauri
-app does is here.
+Nothing the Tauri app does is missing.
 
 ## The conformance test
 

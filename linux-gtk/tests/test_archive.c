@@ -509,6 +509,9 @@ void ytdl_register_pipeline_tests (void);
 /* Defined in test_detail.c -- comment threading and the transcript parser. */
 void ytdl_register_detail_tests (void);
 
+/* Defined in test_profiles.c -- the named option sets. */
+void ytdl_register_profile_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -540,6 +543,7 @@ main (int argc, char **argv)
 
   ytdl_register_pipeline_tests ();
   ytdl_register_detail_tests ();
+  ytdl_register_profile_tests ();
 
   return g_test_run ();
 }

@@ -1,6 +1,7 @@
 #include "downloads_view.h"
 
 #include "paths.h"
+#include "profiles.h"
 
 #include <string.h>
 
@@ -35,6 +36,16 @@ struct _YtdlDownloadsView
   GtkWidget *history_box;
   GtkWidget *queue_title;
   GtkWidget *history_title;
+
+  /* Profiles */
+  YtdlProfileStore *store;
+  GtkWidget        *profile_drop;
+  GtkStringList    *profile_list;
+  GtkWidget        *name_row;
+  GtkWidget        *name_entry;
+  GtkWidget        *profile_status;
+  gboolean          renaming;  /* the name row serves Save and Rename both */
+  gboolean          applying;  /* suppresses the selection handler */
 };
 
 G_DEFINE_FINAL_TYPE (YtdlDownloadsView, ytdl_downloads_view, GTK_TYPE_BOX)
@@ -59,6 +70,20 @@ combo_value (GtkWidget *w)
   if (ids == NULL || i == GTK_INVALID_LIST_POSITION)
     return "";
   return ids[i];
+}
+
+static void
+combo_set_value (GtkWidget *w, const char *id)
+{
+  const char *const *ids = g_object_get_data (G_OBJECT (w), "ytdl-ids");
+  if (ids == NULL || id == NULL)
+    return;
+  for (gsize i = 0; ids[i] != NULL; i++)
+    if (g_strcmp0 (ids[i], id) == 0)
+      {
+        gtk_drop_down_set_selected (GTK_DROP_DOWN (w), (guint) i);
+        return;
+      }
 }
 
 static YtdlRunOptions *
@@ -374,6 +399,238 @@ on_state_changed (YtdlRunner *runner, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Profiles                                                               */
+/* ---------------------------------------------------------------------- */
+
+/* The URL is deliberately NOT touched. A profile that replaced what you were
+ * about to download would be the one thing a preset must never do -- which is
+ * also why the store drops the URL on the way in. */
+static void
+apply_profile_options (YtdlDownloadsView *self, const YtdlRunOptions *o)
+{
+  self->applying = TRUE;
+
+  combo_set_value (self->mode, o->mode != NULL ? o->mode : "full");
+  combo_set_value (self->quality, o->quality != NULL ? o->quality : "best");
+  combo_set_value (self->codec, o->codec != NULL ? o->codec : "any");
+  combo_set_value (self->audio_codec,
+                   o->audio_codec != NULL ? o->audio_codec : "any");
+  combo_set_value (self->container,
+                   o->container != NULL ? o->container : "mkv");
+
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (self->workers),
+                             o->workers > 0 ? o->workers : 1);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->sync_cb), o->sync);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->lazy_cb), o->lazy);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->no_pot_cb), o->no_pot);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->no_comments_cb),
+                               o->no_comments);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->no_subs_cb), o->no_subs);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->no_thumbnail_cb),
+                               o->no_thumbnail);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (self->no_metadata_cb),
+                               o->no_metadata);
+
+  /* The destination is part of the profile, but an empty one must not wipe a
+   * destination the user has set for this session. */
+  if (o->data_root != NULL && *o->data_root != '\0')
+    gtk_editable_set_text (GTK_EDITABLE (self->dest), o->data_root);
+
+  GString *extra = g_string_new (NULL);
+  if (o->ytdlp_args != NULL)
+    for (guint i = 0; i < o->ytdlp_args->len; i++)
+      {
+        if (extra->len > 0)
+          g_string_append_c (extra, '\n');
+        g_string_append (extra, g_ptr_array_index (o->ytdlp_args, i));
+      }
+  gtk_editable_set_text (GTK_EDITABLE (self->extra_args), extra->str);
+  g_string_free (extra, TRUE);
+
+  self->applying = FALSE;
+  refresh_preview (self);
+}
+
+static void
+set_profile_status (YtdlDownloadsView *self, const char *text, gboolean bad)
+{
+  gtk_label_set_text (GTK_LABEL (self->profile_status), text != NULL ? text : "");
+  gtk_widget_remove_css_class (self->profile_status, "error");
+  if (bad)
+    gtk_widget_add_css_class (self->profile_status, "error");
+}
+
+/* Index 0 is always "(no profile)" -- a real state, not a placeholder. It is
+ * what the window is in before anything has been saved. */
+static void
+refresh_profiles (YtdlDownloadsView *self)
+{
+  self->applying = TRUE;
+
+  guint had = g_list_model_get_n_items (G_LIST_MODEL (self->profile_list));
+  const char *none[] = { "(no profile)", NULL };
+  gtk_string_list_splice (self->profile_list, 0, had, none);
+
+  guint selected = 0;
+  for (guint i = 0; i < self->store->profiles->len; i++)
+    {
+      const YtdlProfile *p = g_ptr_array_index (self->store->profiles, i);
+      gtk_string_list_append (self->profile_list, p->name);
+      if (self->store->active != NULL &&
+          g_ascii_strcasecmp (self->store->active, p->name) == 0)
+        selected = i + 1;
+    }
+
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (self->profile_drop), selected);
+  self->applying = FALSE;
+}
+
+static const char *
+selected_profile_name (YtdlDownloadsView *self)
+{
+  guint i = gtk_drop_down_get_selected (GTK_DROP_DOWN (self->profile_drop));
+  if (i == GTK_INVALID_LIST_POSITION || i == 0)
+    return NULL;
+  if (i - 1 >= self->store->profiles->len)
+    return NULL;
+  const YtdlProfile *p = g_ptr_array_index (self->store->profiles, i - 1);
+  return p->name;
+}
+
+static void
+on_profile_selected (GObject *obj, GParamSpec *pspec, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  if (self->applying)
+    return;
+
+  const char *name = selected_profile_name (self);
+  GError *error = NULL;
+
+  if (name == NULL)
+    {
+      /* Clearing the selection does NOT reset the form. The options stay
+       * exactly as they are; you have simply stopped calling them a profile. */
+      ytdl_profiles_activate (self->store, NULL, &error);
+      set_profile_status (self, "", FALSE);
+    }
+  else
+    {
+      const YtdlProfile *p = ytdl_profiles_get (self->store, name);
+      if (p != NULL)
+        apply_profile_options (self, p->opts);
+      ytdl_profiles_activate (self->store, name, &error);
+      set_profile_status (self, "", FALSE);
+    }
+  if (error != NULL)
+    {
+      set_profile_status (self, error->message, TRUE);
+      g_clear_error (&error);
+    }
+}
+
+static void
+show_name_row (YtdlDownloadsView *self, gboolean renaming, const char *initial)
+{
+  self->renaming = renaming;
+  gtk_editable_set_text (GTK_EDITABLE (self->name_entry),
+                         initial != NULL ? initial : "");
+  gtk_widget_set_visible (self->name_row, TRUE);
+  gtk_widget_grab_focus (self->name_entry);
+}
+
+static void
+on_profile_save (GtkButton *b, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  /* Pre-filled with the current profile's name, so Save over an existing one
+   * is Enter rather than retyping. */
+  show_name_row (self, FALSE, selected_profile_name (self));
+}
+
+static void
+on_profile_rename (GtkButton *b, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  const char *name = selected_profile_name (self);
+  if (name == NULL)
+    {
+      set_profile_status (self, "Select a profile to rename.", TRUE);
+      return;
+    }
+  show_name_row (self, TRUE, name);
+}
+
+static void
+on_profile_delete (GtkButton *b, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  const char *name = selected_profile_name (self);
+  if (name == NULL)
+    {
+      set_profile_status (self, "Select a profile to delete.", TRUE);
+      return;
+    }
+
+  g_autofree char *msg = g_strdup_printf ("Deleted \"%s\".", name);
+  GError *error = NULL;
+  if (!ytdl_profiles_delete (self->store, name, &error))
+    {
+      set_profile_status (self, error->message, TRUE);
+      g_clear_error (&error);
+      return;
+    }
+  refresh_profiles (self);
+  set_profile_status (self, msg, FALSE);
+}
+
+static void
+on_name_cancel (GtkButton *b, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  gtk_widget_set_visible (self->name_row, FALSE);
+}
+
+static void
+on_name_confirm (GtkWidget *w, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  const char *typed = gtk_editable_get_text (GTK_EDITABLE (self->name_entry));
+
+  GError *error = NULL;
+  gboolean ok;
+  g_autofree char *msg = NULL;
+
+  if (self->renaming)
+    {
+      const char *from = selected_profile_name (self);
+      ok = from != NULL && ytdl_profiles_rename (self->store, from, typed, &error);
+      if (ok)
+        msg = g_strdup_printf ("Renamed to \"%s\".", typed);
+    }
+  else
+    {
+      g_autoptr (YtdlRunOptions) o = collect (self);
+      ok = ytdl_profiles_save (self->store, typed, o, &error);
+      if (ok)
+        msg = g_strdup_printf ("Saved \"%s\".", typed);
+    }
+
+  if (!ok)
+    {
+      set_profile_status (self,
+                          error != NULL ? error->message : "Could not save.",
+                          TRUE);
+      g_clear_error (&error);
+      return;
+    }
+
+  gtk_widget_set_visible (self->name_row, FALSE);
+  refresh_profiles (self);
+  set_profile_status (self, msg, FALSE);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Actions                                                                */
 /* ---------------------------------------------------------------------- */
 
@@ -548,8 +805,17 @@ ytdl_downloads_view_init (YtdlDownloadsView *self)
 }
 
 static void
+ytdl_downloads_view_dispose (GObject *object)
+{
+  YtdlDownloadsView *self = YTDL_DOWNLOADS_VIEW (object);
+  g_clear_pointer (&self->store, ytdl_profile_store_free);
+  G_OBJECT_CLASS (ytdl_downloads_view_parent_class)->dispose (object);
+}
+
+static void
 ytdl_downloads_view_class_init (YtdlDownloadsViewClass *klass)
 {
+  G_OBJECT_CLASS (klass)->dispose = ytdl_downloads_view_dispose;
 }
 
 GtkWidget *
@@ -558,6 +824,75 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   YtdlDownloadsView *self = g_object_new (YTDL_TYPE_DOWNLOADS_VIEW, NULL);
   self->runner = runner;
   self->settings = settings;
+
+  /* --- Profiles ------------------------------------------------------ */
+  GtkWidget *prow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+
+  const char *const initial[] = { "(no profile)", NULL };
+  self->profile_list = gtk_string_list_new (initial);
+  self->profile_drop =
+      gtk_drop_down_new (G_LIST_MODEL (self->profile_list), NULL);
+  gtk_widget_set_tooltip_text (
+      self->profile_drop,
+      "A saved set of options. Selecting one applies its options and leaves "
+      "the URL alone — a preset that replaced what you were about to download "
+      "would be the one thing a preset must never do.");
+  g_signal_connect (self->profile_drop, "notify::selected",
+                    G_CALLBACK (on_profile_selected), self);
+  gtk_box_append (GTK_BOX (prow), labelled ("Profile", self->profile_drop));
+
+  GtkWidget *pbtns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_valign (pbtns, GTK_ALIGN_END);
+
+  GtkWidget *psave = gtk_button_new_with_label ("Save as…");
+  gtk_widget_set_tooltip_text (
+      psave, "Saves every option except the URL under a name.");
+  g_signal_connect (psave, "clicked", G_CALLBACK (on_profile_save), self);
+  gtk_box_append (GTK_BOX (pbtns), psave);
+
+  GtkWidget *pren = gtk_button_new_with_label ("Rename…");
+  g_signal_connect (pren, "clicked", G_CALLBACK (on_profile_rename), self);
+  gtk_box_append (GTK_BOX (pbtns), pren);
+
+  GtkWidget *pdel = gtk_button_new_with_label ("Delete");
+  g_signal_connect (pdel, "clicked", G_CALLBACK (on_profile_delete), self);
+  gtk_box_append (GTK_BOX (pbtns), pdel);
+  gtk_box_append (GTK_BOX (prow), pbtns);
+
+  self->profile_status = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (self->profile_status), 0.0f);
+  gtk_label_set_ellipsize (GTK_LABEL (self->profile_status),
+                           PANGO_ELLIPSIZE_END);
+  gtk_widget_set_hexpand (self->profile_status, TRUE);
+  gtk_widget_set_valign (self->profile_status, GTK_ALIGN_END);
+  gtk_widget_add_css_class (self->profile_status, "caption");
+  gtk_widget_add_css_class (self->profile_status, "dim-label");
+  gtk_box_append (GTK_BOX (prow), self->profile_status);
+  gtk_box_append (GTK_BOX (self), prow);
+
+  /* An inline name row rather than a modal dialog: naming a profile is a
+   * two-second interaction and a dialog for it is heavier than the thing it
+   * asks for. Enter confirms, Escape-equivalent is the Cancel button. */
+  self->name_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  self->name_entry = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (self->name_entry),
+                                  "Profile name");
+  gtk_widget_set_hexpand (self->name_entry, TRUE);
+  g_signal_connect (self->name_entry, "activate", G_CALLBACK (on_name_confirm),
+                    self);
+  gtk_box_append (GTK_BOX (self->name_row), self->name_entry);
+
+  GtkWidget *nok = gtk_button_new_with_label ("OK");
+  gtk_widget_add_css_class (nok, "suggested-action");
+  g_signal_connect (nok, "clicked", G_CALLBACK (on_name_confirm), self);
+  gtk_box_append (GTK_BOX (self->name_row), nok);
+
+  GtkWidget *ncancel = gtk_button_new_with_label ("Cancel");
+  g_signal_connect (ncancel, "clicked", G_CALLBACK (on_name_cancel), self);
+  gtk_box_append (GTK_BOX (self->name_row), ncancel);
+
+  gtk_widget_set_visible (self->name_row, FALSE);
+  gtk_box_append (GTK_BOX (self), self->name_row);
 
   /* --- URL + destination ------------------------------------------- */
   GtkWidget *top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
@@ -761,6 +1096,20 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   g_signal_connect (runner, "line", G_CALLBACK (on_line), self);
   g_signal_connect (runner, "state-changed", G_CALLBACK (on_state_changed),
                     self);
+
+  /* Loaded after every widget exists, because restoring the active profile
+   * writes into all of them. */
+  self->store = ytdl_profiles_load ();
+  refresh_profiles (self);
+  {
+    const char *active = selected_profile_name (self);
+    if (active != NULL)
+      {
+        const YtdlProfile *p = ytdl_profiles_get (self->store, active);
+        if (p != NULL)
+          apply_profile_options (self, p->opts);
+      }
+  }
 
   refresh_preview (self);
   on_state_changed (runner, self);
