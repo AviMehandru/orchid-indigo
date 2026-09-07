@@ -502,6 +502,10 @@ test_pin_matches_supported_layout (void)
 #endif
 }
 
+/* Defined in test_pipeline.c -- the runner's parsers and the log tail, kept
+ * in their own file but run from this one binary. */
+void ytdl_register_pipeline_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -530,6 +534,8 @@ main (int argc, char **argv)
   g_test_add_func ("/archive/folder-name-parsing", test_folder_name_parsing);
   g_test_add_func ("/archive/pin-matches-supported-layout",
                    test_pin_matches_supported_layout);
+
+  ytdl_register_pipeline_tests ();
 
   return g_test_run ();
 }

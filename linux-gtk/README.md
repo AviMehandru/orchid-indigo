@@ -39,14 +39,26 @@ That accepts anything reasonable: a data root, the `Youtube Videos` folder,
 
 ## What works
 
-Archive discovery and indexing (layout 1 and 2), media-file selection,
-thumbnails, the library grid, live search, threaded scanning with progress.
+**Library** — archive discovery and indexing (layout 1 and 2), media-file
+selection, thumbnails, the grid, live search, threaded scanning with progress.
+
+**Downloads** — builds a `ytdl` command line and runs the installed
+`ytdl.ps1` exactly as a terminal would. Live command preview, the native
+folder chooser for the destination, a sequential queue that survives a
+restart, live progress parsed from yt-dlp's own output, run history with the
+four session-summary counts, pause, and a cancel that kills the whole process
+tree.
+
+**Health** — the seven dependencies probed in parallel with versions and an
+8-second ceiling each, which pipeline files are actually installed (not what
+is in a checkout), `CONFIG_VERSION`, archive counts, and the tail of
+`download.log` / `archive.txt`.
 
 ## What is not built yet
 
-Downloads, health, video detail, settings, playback. The Downloads and Health
-panes are placeholders that say so — the window states what it is rather than
-looking finished and doing nothing.
+Video detail (the per-video page with comments, subtitles and playback), and
+option profiles. Playback is deliberately not planned as an embedded player:
+"Open in mpv" is the better answer on Linux and costs nothing.
 
 ## The conformance test
 

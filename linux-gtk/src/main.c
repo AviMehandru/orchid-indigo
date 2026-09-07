@@ -15,13 +15,21 @@
 #include <gtk/gtk.h>
 
 #include "archive.h"
+#include "downloads_view.h"
+#include "health_view.h"
 #include "library_view.h"
 #include "paths.h"
+#include "pipeline.h"
+#include "settings.h"
 
 typedef struct
 {
   GtkWidget *window;
   GtkWidget *library;
+  GtkWidget *health;
+
+  YtdlSettings *settings;
+  YtdlRunner   *runner;
   GtkWidget *search;
   GtkWidget *rescan;
   GtkWidget *status;
@@ -140,6 +148,8 @@ on_scan_finished (gpointer user_data)
        * to prevent, and the same rule applies to not finding one at all. */
       set_status (app, res->error);
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library), NULL);
+      if (app->health != NULL)
+        ytdl_health_view_set_index (YTDL_HEALTH_VIEW (app->health), NULL);
       g_clear_pointer (&res->index, ytdl_index_free);
     }
   else
@@ -150,6 +160,8 @@ on_scan_finished (gpointer user_data)
       app->index = g_steal_pointer (&res->index);
       ytdl_library_view_set_index (YTDL_LIBRARY_VIEW (app->library),
                                    app->index);
+      if (app->health != NULL)
+        ytdl_health_view_set_index (YTDL_HEALTH_VIEW (app->health), app->index);
       update_counts (app);
     }
 
@@ -228,27 +240,6 @@ on_search_changed (GtkSearchEntry *entry, gpointer user_data)
   update_counts (app);
 }
 
-static GtkWidget *
-make_placeholder (const char *title, const char *body)
-{
-  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-  gtk_widget_set_valign (box, GTK_ALIGN_CENTER);
-  gtk_widget_set_vexpand (box, TRUE);
-
-  GtkWidget *h = gtk_label_new (title);
-  gtk_widget_add_css_class (h, "title-2");
-  gtk_box_append (GTK_BOX (box), h);
-
-  GtkWidget *p = gtk_label_new (body);
-  gtk_label_set_justify (GTK_LABEL (p), GTK_JUSTIFY_CENTER);
-  gtk_label_set_wrap (GTK_LABEL (p), TRUE);
-  gtk_widget_set_size_request (p, 420, -1);
-  gtk_widget_add_css_class (p, "dim-label");
-  gtk_box_append (GTK_BOX (box), p);
-
-  return box;
-}
-
 static void
 load_css (void)
 {
@@ -278,7 +269,7 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
 
   app->window = gtk_application_window_new (gtkapp);
   gtk_window_set_title (GTK_WINDOW (app->window), "yt-dlp Archive");
-  gtk_window_set_default_size (GTK_WINDOW (app->window), 1100, 720);
+  gtk_window_set_default_size (GTK_WINDOW (app->window), 1180, 880);
 
   GtkWidget *header = gtk_header_bar_new ();
   gtk_window_set_titlebar (GTK_WINDOW (app->window), header);
@@ -308,22 +299,12 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
                                  GTK_STACK_TRANSITION_TYPE_CROSSFADE);
   gtk_stack_add_titled (GTK_STACK (stack), app->library, "library", "Library");
 
-  /* Named as not built rather than left out, so the window says what it is
-   * rather than looking finished and doing nothing. */
-  gtk_stack_add_titled (
-      GTK_STACK (stack),
-      make_placeholder ("Downloads",
-                        "Not built yet. This pane will drive the installed "
-                        "ytdl.ps1 the same way a terminal does, with the "
-                        "queue, live progress and run history."),
-      "downloads", "Downloads");
-  gtk_stack_add_titled (
-      GTK_STACK (stack),
-      make_placeholder ("Health",
-                        "Not built yet. This pane will report the detected "
-                        "dependencies, the config version and the archive "
-                        "checksums."),
-      "health", "Health");
+  GtkWidget *downloads =
+      ytdl_downloads_view_new (app->runner, app->settings);
+  gtk_stack_add_titled (GTK_STACK (stack), downloads, "downloads", "Downloads");
+
+  app->health = ytdl_health_view_new (app->settings);
+  gtk_stack_add_titled (GTK_STACK (stack), app->health, "health", "Health");
 
   GtkWidget *switcher = gtk_stack_switcher_new ();
   gtk_stack_switcher_set_stack (GTK_STACK_SWITCHER (switcher),
@@ -350,6 +331,11 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
   gtk_window_set_child (GTK_WINDOW (app->window), root);
   gtk_window_present (GTK_WINDOW (app->window));
 
+  /* The worker starts only once the window it will emit into is real, which
+   * is why ytdl_runner_new does not start it. A restored queue would
+   * otherwise begin producing events with nothing connected to receive them. */
+  ytdl_runner_start (app->runner);
+  ytdl_health_view_refresh (YTDL_HEALTH_VIEW (app->health), FALSE);
   start_scan (app);
 }
 
@@ -382,6 +368,8 @@ main (int argc, char **argv)
     }
 
   App app = { 0 };
+  app.settings = ytdl_settings_load ();
+  app.runner = ytdl_runner_new ();
   app.archive_root = archive_root != NULL
                          ? ytdl_resolve_archive_root (archive_root)
                          : ytdl_autodetect_archive_root ();
@@ -399,6 +387,11 @@ main (int argc, char **argv)
    * --archive-root itself and refuse it. */
   int status = g_application_run (G_APPLICATION (gtkapp), 0, NULL);
 
+  /* Stop the worker BEFORE the index goes: a run finishing during teardown
+   * would otherwise touch state that has already been freed. */
+  ytdl_runner_stop (app.runner);
+  g_clear_object (&app.runner);
+  g_clear_pointer (&app.settings, ytdl_settings_free);
   g_clear_pointer (&app.index, ytdl_index_free);
   g_free (app.archive_root);
   return status;

@@ -48,6 +48,9 @@ add_project_arguments(
 core_sources = files(
   'src/paths.c',
   'src/archive.c',
+  'src/pipeline.c',
+  'src/health.c',
+  'src/settings.c',
 )
 
 core = static_library('ytdlcore', core_sources,
@@ -55,7 +58,12 @@ core = static_library('ytdlcore', core_sources,
   include_directories : include_directories('src'))
 
 executable('ytdl-gtk',
-  files('src/main.c', 'src/library_view.c'),
+  files(
+    'src/main.c',
+    'src/library_view.c',
+    'src/downloads_view.c',
+    'src/health_view.c',
+  ),
   dependencies : deps,
   link_with : core,
   include_directories : include_directories('src'),
@@ -73,7 +81,7 @@ executable('ytdl-gtk',
 cli_version = meson.project_source_root() / '..' / 'CLI_VERSION'
 
 test_archive = executable('test-archive',
-  files('tests/test_archive.c'),
+  files('tests/test_archive.c', 'tests/test_pipeline.c'),
   c_args : ['-DYTDL_CLI_VERSION_PATH="' + cli_version + '"'],
   dependencies : deps,
   link_with : core,
