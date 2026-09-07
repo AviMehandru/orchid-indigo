@@ -917,6 +917,8 @@ ytdl_detail_view_init (YtdlDetailView *self)
 
   self->summary = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->summary), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (self->summary), TRUE);
+  gtk_label_set_wrap_mode (GTK_LABEL (self->summary), PANGO_WRAP_WORD_CHAR);
   gtk_widget_add_css_class (self->summary, "caption");
   gtk_widget_add_css_class (self->summary, "dim-label");
   gtk_box_append (GTK_BOX (head), self->summary);
@@ -965,8 +967,19 @@ ytdl_detail_view_init (YtdlDetailView *self)
   gtk_widget_set_vexpand (split, TRUE);
   gtk_box_append (GTK_BOX (self), split);
 
-  /* --- actions --- */
-  GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  /* --- actions ---
+   *
+   * A GtkFlowBox, not a GtkBox. Three buttons in a box have a minimum width
+   * of all three side by side -- 469px here -- because a button will not
+   * shrink below its label. A flow box reflows them onto a second line
+   * instead, so the row's minimum is one button rather than three. */
+  GtkWidget *actions = gtk_flow_box_new ();
+  gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (actions), GTK_SELECTION_NONE);
+  gtk_flow_box_set_homogeneous (GTK_FLOW_BOX (actions), FALSE);
+  gtk_flow_box_set_min_children_per_line (GTK_FLOW_BOX (actions), 1);
+  gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (actions), 4);
+  gtk_flow_box_set_column_spacing (GTK_FLOW_BOX (actions), 8);
+  gtk_flow_box_set_row_spacing (GTK_FLOW_BOX (actions), 8);
   gtk_widget_set_margin_start (actions, 12);
   gtk_widget_set_margin_end (actions, 12);
 
@@ -975,24 +988,27 @@ ytdl_detail_view_init (YtdlDetailView *self)
       play, "mpv plays every codec combination this pipeline produces and "
             "reads the embedded subtitles and chapters.");
   g_signal_connect (play, "clicked", G_CALLBACK (on_open_player), self);
-  gtk_box_append (GTK_BOX (actions), play);
+  gtk_flow_box_append (GTK_FLOW_BOX (actions), play);
 
   GtkWidget *folder = gtk_button_new_with_label ("Open folder");
   g_signal_connect (folder, "clicked", G_CALLBACK (on_open_folder), self);
-  gtk_box_append (GTK_BOX (actions), folder);
+  gtk_flow_box_append (GTK_FLOW_BOX (actions), folder);
 
   GtkWidget *verify = gtk_button_new_with_label ("Verify checksums");
   gtk_widget_set_tooltip_text (
       verify, "Re-hashes every file in this folder against the "
               "checksums.sha256 postprocess.ps1 wrote.");
   g_signal_connect (verify, "clicked", G_CALLBACK (on_verify), self);
-  gtk_box_append (GTK_BOX (actions), verify);
+  gtk_flow_box_append (GTK_FLOW_BOX (actions), verify);
 
   self->verify_result = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->verify_result), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (self->verify_result), TRUE);
+  gtk_label_set_wrap_mode (GTK_LABEL (self->verify_result),
+                           PANGO_WRAP_WORD_CHAR);
   gtk_widget_set_hexpand (self->verify_result, TRUE);
   gtk_widget_add_css_class (self->verify_result, "caption");
-  gtk_box_append (GTK_BOX (actions), self->verify_result);
+  gtk_flow_box_append (GTK_FLOW_BOX (actions), self->verify_result);
 
   GtkWidget *lower = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_widget_set_margin_top (lower, 8);
@@ -1012,8 +1028,23 @@ ytdl_detail_view_init (YtdlDetailView *self)
   gtk_text_view_set_monospace (GTK_TEXT_VIEW (self->transcript), FALSE);
 
   GtkWidget *tbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  /* WRAP, and this one label was the whole window floor.
+   *
+   * A GtkLabel with neither wrap nor ellipsize reports minimum == natural,
+   * so it can never be given less room than its longest line -- and this line
+   * is a file path plus three clauses, which measured 483px. Everything above
+   * it inherited that: the box, the clamp, the viewport, the scrolled window
+   * (horizontal policy NEVER), the view stack, the paned, the navigation
+   * view, the window. One label nobody looks at was setting the smallest size
+   * the application could be.
+   *
+   * WORD_CHAR rather than WORD because the first token is a path with no
+   * spaces in it; WORD alone would still refuse to go below its width. */
   self->transcript_note = gtk_label_new ("");
   gtk_label_set_xalign (GTK_LABEL (self->transcript_note), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (self->transcript_note), TRUE);
+  gtk_label_set_wrap_mode (GTK_LABEL (self->transcript_note),
+                           PANGO_WRAP_WORD_CHAR);
   gtk_widget_add_css_class (self->transcript_note, "caption");
   gtk_widget_add_css_class (self->transcript_note, "dim-label");
   gtk_box_append (GTK_BOX (tbox), self->transcript_note);
@@ -1072,11 +1103,9 @@ ytdl_detail_view_init (YtdlDetailView *self)
    *
    * AdwBreakpointBin is the answer -- a breakpoint scoped to a WIDGET,
    * measured against this bin's own allocation. Below 620sp each icon stacks
-   * over its label, which fits all five down to about 560px -- the practical
-   * floor for this page, set by the player and the metadata rows rather than
-   * by the tabs. It needs an explicit minimum size for the same reason the
-   * window does: it has to know the smallest allocation it can be asked to
-   * lay out. */
+   * over its label, which fits all five down to the window's 360px minimum.
+   * It needs an explicit minimum size for the same reason the window does: it
+   * has to know the smallest allocation it can be asked to lay out. */
   GtkWidget *switcher_bin = adw_breakpoint_bin_new ();
   gtk_widget_set_size_request (switcher_bin, 120, 42);
   adw_breakpoint_bin_set_child (ADW_BREAKPOINT_BIN (switcher_bin),

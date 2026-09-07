@@ -928,19 +928,34 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   GtkWidget *pgroup = adw_preferences_group_new ();
   adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (pgroup), "Profile");
 
-  GtkWidget *pbtns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-  GtkWidget *psave = gtk_button_new_with_label ("Save as…");
+  /* Icon buttons, not labelled ones. Three labelled buttons in a group header
+   * measure about 285px and will not shrink, so at a 360px window they left
+   * roughly fifty pixels for the group title and it collapsed to an ellipsis.
+   * Icons with tooltips are the GNOME treatment for group-header actions
+   * anyway, and they take the squeeze out at every width.
+   *
+   * No destructive-action class on Delete: a scarlet button in a group header
+   * reads as the primary action of the page, and this one deletes a preset,
+   * not data. */
+  GtkWidget *pbtns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class (pbtns, "linked");
+
+  GtkWidget *psave = gtk_button_new_from_icon_name ("document-save-symbolic");
+  gtk_widget_set_tooltip_text (
+      psave, "Save these options as a profile — every option except the URL.");
   g_signal_connect (psave, "clicked", G_CALLBACK (on_profile_save), self);
   gtk_box_append (GTK_BOX (pbtns), psave);
-  GtkWidget *pren = gtk_button_new_with_label ("Rename…");
+
+  GtkWidget *pren = gtk_button_new_from_icon_name ("document-edit-symbolic");
+  gtk_widget_set_tooltip_text (pren, "Rename the selected profile");
   g_signal_connect (pren, "clicked", G_CALLBACK (on_profile_rename), self);
   gtk_box_append (GTK_BOX (pbtns), pren);
-  /* No destructive-action class: a scarlet button in a group header reads as
-   * the primary action of the page, and this one deletes a preset -- not
-   * data. The confirmation it deserves is the one the label already gives. */
-  GtkWidget *pdel = gtk_button_new_with_label ("Delete");
+
+  GtkWidget *pdel = gtk_button_new_from_icon_name ("user-trash-symbolic");
+  gtk_widget_set_tooltip_text (pdel, "Delete the selected profile");
   g_signal_connect (pdel, "clicked", G_CALLBACK (on_profile_delete), self);
   gtk_box_append (GTK_BOX (pbtns), pdel);
+
   adw_preferences_group_set_header_suffix (ADW_PREFERENCES_GROUP (pgroup),
                                            pbtns);
 
