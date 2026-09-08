@@ -349,13 +349,13 @@ struct DownloadsView: View {
         Section("Advanced") {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Extra yt-dlp arguments, one per line")
-                TextEditor(text: $extraArgsText)
+                TextEditor(text: $form.extraArgsText)
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 60)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5).strokeBorder(.separator)
                     )
-                    .onChange(of: extraArgsText) { text in
+                    .onChange(of: form.extraArgsText) { text in
                         form.opts.ytdlpArgs = text
                             .components(separatedBy: "\n")
                             .map { $0.trimmingCharacters(in: .whitespaces) }
