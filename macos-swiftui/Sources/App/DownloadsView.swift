@@ -110,7 +110,7 @@ struct DownloadsView: View {
 
     var body: some View {
         VSplitView {
-            form
+            optionsForm
                 .frame(minHeight: 220, idealHeight: 470)
             runArea
                 .frame(minHeight: 200)
@@ -135,7 +135,9 @@ struct DownloadsView: View {
 
     // MARK: - The form
 
-    private var form: some View {
+    /* Not named `form`: that is the DownloadsModel this view reads its state
+     * from, and a computed property cannot share a name with a stored one. */
+    private var optionsForm: some View {
         Form {
             profileSection
             downloadSection
