@@ -33,7 +33,10 @@ CLI_REF=main
 #
 #   linux-gtk   YTDL_SUPPORTED_ARCHIVE_LAYOUT in src/archive.h,
 #               checked by tests/test_archive.c
-#   macos       (not built yet)
+#   macos       supportedArchiveLayout in Sources/Core/Archive.swift,
+#               checked by Tests/ArchiveConformanceTests.swift -- which reads
+#               THIS FILE from the test bundle, so the pin and the constant
+#               cannot drift apart silently
 #   windows     (not built yet)
 #
 # Raise this only after EVERY app in this repo has been updated to read the

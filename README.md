@@ -8,7 +8,7 @@ per platform, each written in that platform's own language and toolkit.
 | Platform | Toolkit | Language | Status |
 |---|---|---|---|
 | Linux | GTK4 + libadwaita | C | working |
-| macOS | SwiftUI | Swift | not started |
+| macOS | SwiftUI | Swift | complete |
 | Windows | WinUI 3 | C# | not started |
 
 **No Rust. No webview. No shared engine.** Each app depends only on what its
@@ -84,7 +84,11 @@ no top-level build system, because there is nothing for one to coordinate.
 
 - **Linux** — see [`linux-gtk/README.md`](linux-gtk/README.md).
   `meson setup build && meson compile -C build`
-- **macOS** — not started
+- **macOS** — see [`macos-swiftui/README.md`](macos-swiftui/README.md).
+  `open macos-swiftui/YtdlMac.xcodeproj`, or
+  `xcodebuild -project macos-swiftui/YtdlMac.xcodeproj -scheme ytdl-macos build`.
+  **It has never been compiled** — read that README's first paragraph before
+  the first build.
 - **Windows** — not started
 
 ## After a pipeline upgrade
@@ -94,6 +98,7 @@ only pays off if the tests are actually run:
 
 ```sh
 cd linux-gtk && meson test -C build
+xcodebuild -project macos-swiftui/YtdlMac.xcodeproj -scheme ytdl-macos test
 ```
 
 If one fails, the pipeline's layout moved and this repo has not caught up.
