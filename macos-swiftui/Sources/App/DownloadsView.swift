@@ -31,25 +31,25 @@ import UniformTypeIdentifiers
  * object owned by AppModel is the same guarantee. */
 @MainActor
 final class DownloadsModel: ObservableObject {
-    @Published var form.opts = RunOptions()
+    @Published var opts = RunOptions()
     /// One --ytdlp-arg per line, because a real --match-filter expression
     /// contains commas and spaces and there is no separator that would be safe
     /// to split a single-line field on.
     @Published var extraArgsText = ""
-    @Published var form.selectedProfile: String?
+    @Published var selectedProfile: String?
     @Published var status = ""
     @Published var statusIsError = false
 
     init(settings: Settings, store: ProfileStore) {
-        form.opts.dataRoot = settings.dataRoot
-        form.opts.workers = settings.defaultWorkers
-        form.opts.mode = "full"
-        form.opts.quality = "best"
-        form.opts.codec = "any"
-        form.opts.audioCodec = "any"
-        form.opts.container = "mkv"
+        opts.dataRoot = settings.dataRoot
+        opts.workers = settings.defaultWorkers
+        opts.mode = "full"
+        opts.quality = "best"
+        opts.codec = "any"
+        opts.audioCodec = "any"
+        opts.container = "mkv"
 
-        form.selectedProfile = store.active
+        selectedProfile = store.active
         if let name = store.active, let p = store.profile(named: name) {
             apply(p.opts)
         }
@@ -61,30 +61,30 @@ final class DownloadsModel: ObservableObject {
      * somebody saved, the command preview shows every flag that will run, and
      * silently discarding stored settings is the worse of the two failures. */
     func apply(_ p: RunOptions) {
-        form.opts.mode = p.mode.isEmpty ? "full" : p.mode
-        form.opts.quality = p.quality.isEmpty ? "best" : p.quality
-        form.opts.codec = p.codec.isEmpty ? "any" : p.codec
-        form.opts.audioCodec = p.audioCodec.isEmpty ? "any" : p.audioCodec
-        form.opts.container = p.container.isEmpty ? "mkv" : p.container
-        form.opts.workers = p.workers > 0 ? p.workers : 1
-        form.opts.sync = p.sync
-        form.opts.lazy = p.lazy
-        form.opts.noPot = p.noPot
-        form.opts.skipPotUpdate = p.skipPotUpdate
-        form.opts.potPort = p.potPort
-        form.opts.items = p.items
-        form.opts.after = p.after
-        form.opts.noComments = p.noComments
-        form.opts.noSubs = p.noSubs
-        form.opts.noThumbnail = p.noThumbnail
-        form.opts.noMetadata = p.noMetadata
+        opts.mode = p.mode.isEmpty ? "full" : p.mode
+        opts.quality = p.quality.isEmpty ? "best" : p.quality
+        opts.codec = p.codec.isEmpty ? "any" : p.codec
+        opts.audioCodec = p.audioCodec.isEmpty ? "any" : p.audioCodec
+        opts.container = p.container.isEmpty ? "mkv" : p.container
+        opts.workers = p.workers > 0 ? p.workers : 1
+        opts.sync = p.sync
+        opts.lazy = p.lazy
+        opts.noPot = p.noPot
+        opts.skipPotUpdate = p.skipPotUpdate
+        opts.potPort = p.potPort
+        opts.items = p.items
+        opts.after = p.after
+        opts.noComments = p.noComments
+        opts.noSubs = p.noSubs
+        opts.noThumbnail = p.noThumbnail
+        opts.noMetadata = p.noMetadata
 
         /* The destination is part of the profile, but an empty one must not wipe
          * a destination the user has set for this session. */
-        if !p.dataRoot.isEmpty { form.opts.dataRoot = p.dataRoot }
+        if !p.dataRoot.isEmpty { opts.dataRoot = p.dataRoot }
 
         extraArgsText = p.ytdlpArgs.joined(separator: "\n")
-        form.opts.ytdlpArgs = p.ytdlpArgs
+        opts.ytdlpArgs = p.ytdlpArgs
     }
 
     func setStatus(_ text: String, isError: Bool) {
