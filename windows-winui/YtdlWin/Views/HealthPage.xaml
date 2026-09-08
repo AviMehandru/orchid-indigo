@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="YtdlWin.Views.HealthPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <!--
+        The Health pane: what is installed, what version, and does the archive
+        still verify.
+
+        Read-only, like everything behind it. The pipeline updates yt-dlp on its
+        own 24h throttle and a second updater racing it from a window is exactly
+        the shared-state collision the pipeline spent a release removing.
+
+        This is also where the archive root is chosen, because "the library is
+        empty" and "the app is looking at the wrong folder" are the same question
+        and this is the pane that answers it.
+    -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Padding="16" MaxWidth="{StaticResource PaneMaxWidth}"
+                    HorizontalAlignment="Left">
+
+            <TextBlock Text="Health" Style="{StaticResource TitleTextBlockStyle}"
+                       Margin="0,0,0,14" />
+
+            <StackPanel x:Name="Sections" Spacing="0" />
+
+            <!-- Logs. Its own block because the tail view is a fixed-height
+                 scroller rather than a list of rows. -->
+            <StackPanel Spacing="8" Margin="0,0,0,20">
+                <Grid>
+                    <TextBlock Text="Logs" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <ComboBox x:Name="LogChoice" HorizontalAlignment="Right" MinWidth="160"
+                              SelectionChanged="OnLogChoiceChanged">
+                        <ComboBoxItem Content="download.log" Tag="download.log" IsSelected="True" />
+                        <ComboBoxItem Content="archive.txt" Tag="archive.txt" />
+                    </ComboBox>
+                </Grid>
+                <Border Style="{StaticResource CardBorder}" Height="240">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8">
+                        <TextBlock x:Name="LogText" Style="{StaticResource MonoText}"
+                                   FontSize="12" />
+                    </ScrollViewer>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

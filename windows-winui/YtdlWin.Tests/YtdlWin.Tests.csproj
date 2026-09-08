@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE CORE IS COMPILED FROM SOURCE, NOT REFERENCED AS A PROJECT.
+
+    The obvious arrangement is a ProjectReference to YtdlWin. It is deliberately
+    not used, for two reasons that both matter here.
+
+    First, YtdlWin is a WinUI 3 application: referencing it drags the XAML
+    compiler, the Windows App SDK and a WinExe entry point into the test run,
+    which is a great deal of machinery to stand up in order to test a function
+    that parses a subtitle timestamp -- and every one of those pieces is another
+    thing that can fail on a machine where the app itself has never been built.
+
+    Second and more practically, `dotnet test` on this project then needs
+    nothing but the .NET SDK. Everything under Core/ is plain .NET with no
+    Microsoft.UI dependency at all -- that is why Runner exposes a Drain() the
+    window calls rather than being an observable object -- so the whole of what
+    this suite covers compiles and runs without a UI thread, a window, or the
+    Windows App SDK being restorable. For code that has never been compiled,
+    "the tests can run even if the app cannot yet be built" is worth more than
+    architectural tidiness.
+
+    The cost is that Core types exist in two assemblies. Nothing marshals
+    between them, so that costs nothing real.
+
+    NOTE: this still targets net8.0-windows, and the process, job-object and
+    registry tests genuinely require Windows. It cannot be run on Linux or
+    macOS -- which, since the whole app is Windows-only, is not a limitation
+    this project can design away.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>YtdlWin.Tests</RootNamespace>
+    <!-- The app's own default too, and for the same reason: this has never
+         been compiled, and a warning-as-error before the first clean build is
+         noise rather than signal. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\YtdlWin\Core\*.cs" LinkBase="Core" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      As with the app's package references, these versions are UNVERIFIED --
+      no NuGet feed was reachable from the environment this was written in.
+      If restore fails, check nuget.org and pin what is actually current.
+    -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      CLI_VERSION is copied next to the test binary so ArchiveConformanceTests
+      can assert REQUIRES_ARCHIVE_LAYOUT against this app's own constant. The
+      test reads THIS FILE rather than hardcoding the number, so the pin and the
+      constant cannot drift apart silently -- which is the whole point of having
+      one pin for all three apps.
+    -->
+    <None Include="..\..\CLI_VERSION" Link="CLI_VERSION">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

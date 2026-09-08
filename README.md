@@ -7,9 +7,9 @@ per platform, each written in that platform's own language and toolkit.
 
 | Platform | Toolkit | Language | Status |
 |---|---|---|---|
-| Linux | GTK4 + libadwaita | C | working |
-| macOS | SwiftUI | Swift | complete |
-| Windows | WinUI 3 | C# | not started |
+| Linux | GTK4 + libadwaita | C | working, and the only one ever run |
+| macOS | SwiftUI | Swift | complete, never compiled |
+| Windows | WinUI 3 | C# | complete, never compiled |
 
 **No Rust. No webview. No shared engine.** Each app depends only on what its
 platform already ships.
@@ -48,7 +48,11 @@ The cost is that **the archive layout now has five consumers**:
 2. `archive-viewer.py` reads it
 3. the Tauri app reads it
 4. `linux-gtk/` reads it
-5. `macos/` and `windows/` will read it
+5. `macos-swiftui/` reads it
+6. `windows-winui/` reads it
+
+That is six, not five. The count went up when this repository grew its third
+app, which is the cost the rest of this section is about.
 
 Five copies of one agreement drift apart silently. A layout change that
 updates four of them produces a green build everywhere and one platform whose
@@ -89,7 +93,10 @@ no top-level build system, because there is nothing for one to coordinate.
   `xcodebuild -project macos-swiftui/YtdlMac.xcodeproj -scheme ytdl-macos build`.
   **It has never been compiled** — read that README's first paragraph before
   the first build.
-- **Windows** — not started
+- **Windows** — see [`windows-winui/README.md`](windows-winui/README.md).
+  `dotnet build YtdlWin.sln`, or open `windows-winui/YtdlWin.sln`.
+  **It has never been compiled** — read that README's first paragraph and its
+  "What is most likely to be wrong" section before the first build.
 
 ## After a pipeline upgrade
 
@@ -99,7 +106,12 @@ only pays off if the tests are actually run:
 ```sh
 cd linux-gtk && meson test -C build
 xcodebuild -project macos-swiftui/YtdlMac.xcodeproj -scheme ytdl-macos test
+dotnet test windows-winui/YtdlWin.Tests/YtdlWin.Tests.csproj
 ```
+
+Each needs its own platform. The Windows suite is the only one that can be run
+without building its app first — the test project compiles the core from source
+rather than referencing it, so `dotnet test` needs nothing but the .NET SDK.
 
 If one fails, the pipeline's layout moved and this repo has not caught up.
 Read `docs/archive-layout.md` in the pipeline repo — the "Upgrading a reader"

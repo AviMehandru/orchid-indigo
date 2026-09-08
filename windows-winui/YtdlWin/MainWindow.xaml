@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="YtdlWin.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    Title="yt-dlp Archive">
+
+    <!--
+        THE SHELL IS THE PLATFORM'S, NOT HAND-BUILT.
+
+        NavigationView owns the pane, the three pages, the back button and the
+        hamburger; its Frame owns library-to-detail, which is where Back, Alt+Left
+        and the mouse's back button come from for free. AutoSuggestBox in the
+        header owns search.
+
+        NavigationView is also where the adaptive story comes from, and it is
+        worth saying what this app does and does not promise. The GTK app is
+        adaptive down to 360px because GNOME targets phone-shaped windows. Windows
+        does not, so this sets a sensible minimum and stops -- but NavigationView's
+        own Compact and Minimal display modes still collapse the pane to icons and
+        then to a hamburger as the window narrows, which is the platform's answer
+        and costs nothing to accept.
+    -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <muxc:NavigationView
+            x:Name="Nav"
+            Grid.Row="0"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            PaneDisplayMode="Left"
+            OpenPaneLength="200"
+            SelectionChanged="OnSectionChanged"
+            BackRequested="OnBackRequested">
+
+            <muxc:NavigationView.MenuItems>
+                <muxc:NavigationViewItem Content="Library" Tag="library" Icon="Video" />
+                <muxc:NavigationViewItem Content="Downloads" Tag="downloads" Icon="Download" />
+                <muxc:NavigationViewItem Content="Health" Tag="health" Icon="Repair" />
+            </muxc:NavigationView.MenuItems>
+
+            <muxc:NavigationView.AutoSuggestBox>
+                <AutoSuggestBox
+                    x:Name="Search"
+                    QueryIcon="Find"
+                    PlaceholderText="Search title, channel or id"
+                    TextChanged="OnSearchChanged" />
+            </muxc:NavigationView.AutoSuggestBox>
+
+            <Frame x:Name="ContentFrame" />
+        </muxc:NavigationView>
+
+        <!--
+            A permanent quiet status line rather than a transient toast.
+
+            libadwaita has AdwToastOverlay and the GTK app uses it. WinUI has
+            InfoBar, which is a banner that takes a row of layout and has to be
+            dismissed, not a toast -- so using it for "412 videos · 38 channels"
+            would mean a bar the user closes and then never sees the counts
+            again. A status line at the bottom is what the macOS app settled on
+            for the same reason, and the one case that must interrupt -- no
+            archive at all -- gets a ContentDialog instead.
+        -->
+        <Border
+            Grid.Row="1"
+            BorderThickness="0,1,0,0"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+            Background="{ThemeResource LayerFillColorDefaultBrush}"
+            Padding="14,6">
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <muxc:ProgressRing
+                    x:Name="ScanRing"
+                    Grid.Column="0"
+                    Width="14" Height="14"
+                    IsActive="False"
+                    Visibility="Collapsed" />
+
+                <TextBlock
+                    x:Name="StatusText"
+                    Grid.Column="1"
+                    Style="{StaticResource CaptionSecondary}"
+                    TextWrapping="NoWrap"
+                    TextTrimming="CharacterEllipsis"
+                    Text="Starting…" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

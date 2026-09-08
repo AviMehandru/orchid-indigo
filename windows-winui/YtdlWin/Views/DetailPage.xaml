@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="YtdlWin.Views.DetailPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <Grid Padding="14,10,14,0" RowSpacing="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Spacing="4">
+            <TextBlock x:Name="TitleText" Style="{StaticResource SubtitleTextBlockStyle}"
+                       TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock x:Name="SubtitleText" Style="{StaticResource CaptionSecondary}" />
+                <muxc:ProgressRing x:Name="LoadRing" Width="14" Height="14" IsActive="True" />
+            </StackPanel>
+            <TextBlock x:Name="SummaryText" Style="{StaticResource CaptionSecondary}" />
+            <StackPanel x:Name="HeaderBadges" Orientation="Horizontal" Spacing="6" />
+        </StackPanel>
+
+        <!--
+            The player, or the honest note. Exactly one of these is visible.
+
+            MediaPlayerElement is handed the ORIGINAL file, always. Unlike the
+            macOS app there is no static list of extensions this window can
+            play, because on Windows there is no such list to write: MP4/H.264
+            is in the box, Matroska has been readable since Windows 10, and VP9,
+            Opus, AV1 and HEVC each depend on a Store media extension that may or
+            may not be installed on this machine. So the player is given the
+            file and MediaFailed decides -- and because ffprobe has already read
+            the container by then, the note can name the codec that actually
+            failed rather than guessing from the extension.
+
+            AreTransportControlsEnabled, and AutoPlay explicitly off: opening a
+            page should not start making noise.
+        -->
+        <muxc:MediaPlayerElement
+            x:Name="Player"
+            Grid.Row="1"
+            Height="320"
+            AreTransportControlsEnabled="True"
+            AutoPlay="False" />
+
+        <Border x:Name="PlaybackNote" Grid.Row="1" Visibility="Collapsed"
+                Style="{StaticResource CardBorder}" Padding="12">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <FontIcon Glyph="&#xE8B3;" FontSize="16" VerticalAlignment="Top"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="PlaybackNoteText" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </Border>
+
+        <!-- Actions -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
+            <Button x:Name="OpenInPlayerButton" Click="OnOpenInPlayer"
+                    ToolTipService.ToolTip="mpv and VLC play every codec combination this pipeline produces, and read the embedded subtitles and chapters." />
+            <Button Content="Show in Explorer" Click="OnReveal" />
+            <Button Content="Verify checksums" Click="OnVerify"
+                    ToolTipService.ToolTip="Re-hashes every file in this folder against the checksums.sha256 postprocess.ps1 wrote." />
+            <TextBlock x:Name="VerifyText" VerticalAlignment="Center"
+                       Style="{StaticResource CaptionSecondary}" />
+        </StackPanel>
+
+        <muxc:NavigationView
+            Grid.Row="3"
+            x:Name="Tabs"
+            PaneDisplayMode="Top"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            SelectionChanged="OnTabChanged">
+            <muxc:NavigationView.MenuItems>
+                <muxc:NavigationViewItem Content="Details" Tag="details" />
+                <muxc:NavigationViewItem Content="Media" Tag="media" />
+                <muxc:NavigationViewItem Content="Comments" Tag="comments" />
+                <muxc:NavigationViewItem Content="Transcript" Tag="transcript" />
+                <muxc:NavigationViewItem Content="Files" Tag="files" />
+            </muxc:NavigationView.MenuItems>
+        </muxc:NavigationView>
+
+        <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" Padding="0,10,10,14">
+            <StackPanel x:Name="TabContent" MaxWidth="{StaticResource PaneMaxWidth}"
+                        HorizontalAlignment="Left" Spacing="4" />
+        </ScrollViewer>
+    </Grid>
+</Page>

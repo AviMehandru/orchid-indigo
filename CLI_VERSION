@@ -37,7 +37,10 @@ CLI_REF=main
 #               checked by Tests/ArchiveConformanceTests.swift -- which reads
 #               THIS FILE from the test bundle, so the pin and the constant
 #               cannot drift apart silently
-#   windows     (not built yet)
+#   windows     ArchiveLayout.Supported in YtdlWin/Core/Archive.cs,
+#               checked by YtdlWin.Tests/ArchiveConformanceTests.cs -- which reads
+#               THIS FILE from beside the test binary, so the pin and the constant
+#               cannot drift apart silently
 #
 # Raise this only after EVERY app in this repo has been updated to read the
 # newer layout, and after each one's conformance suite passes against a
