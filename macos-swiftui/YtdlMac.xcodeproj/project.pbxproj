@@ -1,0 +1,470 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1EBABA0DC82A4D1079754A0B /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F8729DA435B160629361204 /* Components.swift */; };
+		59BB1DF3C824FB3A489C8A02 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B075E554171D2FA2B76EF1C /* ContentView.swift */; };
+		084C8E6BCDA9B15356ADA55C /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09F308425C4836A8FECA10EE /* DetailView.swift */; };
+		970AD6BA32A5C79F8A27826B /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44C470B6B37DE6EEEA26676A /* DownloadsView.swift */; };
+		E5522F204ED813BB10972102 /* HealthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 433ED4976C3731E80B97A558 /* HealthView.swift */; };
+		F053F6AAF2F939D473DB3EE1 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C645230479849D40A7B66BDE /* LibraryView.swift */; };
+		917EB018C25995BC1D78D459 /* YtdlMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FE3B0F2D18AF508CD5617C8 /* YtdlMacApp.swift */; };
+		04558C4912998416FEA91B1E /* Archive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CD3CED55DA3146DD065675C /* Archive.swift */; };
+		7EDB0DEBBE76E9DB57EFEE49 /* ArchiveInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAFAE5F1D28A9FBD8510FEE7 /* ArchiveInfo.swift */; };
+		ED6F70C3E299949F891FC76F /* CLIVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3CF35C63CE45D9E32FACC5 /* CLIVersion.swift */; };
+		C95794EC45192F4105FCB0B4 /* Formatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = D68949CF056ACDE304035354 /* Formatting.swift */; };
+		BA72CD40B970AABCA291B6D4 /* Health.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE5AAEA02022E4CEB1E5D24F /* Health.swift */; };
+		BB0EABABF6999AE907B7DF4F /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30EF33F34ADAF308DF537EE5 /* JSON.swift */; };
+		315B244B93553017BA6D8C43 /* Media.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8A3C7AF21998D9FF7D79B6 /* Media.swift */; };
+		E081B9F3E717BDDD18EBDA87 /* Paths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F1D454ED17CF62042CAF554 /* Paths.swift */; };
+		AB0C5674A4E41C66C560C977 /* Pipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01A023C059EA80B9BF564C8 /* Pipeline.swift */; };
+		4D6AEC3FF40F22BC767FD63A /* Profiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 277C81C5191086735C1C7E7E /* Profiles.swift */; };
+		C7E39767C6917D6B50F3C847 /* Runner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A956F81678EDFE282943874 /* Runner.swift */; };
+		520FC42CB60F2E6EBB84045A /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46FEF33AC69F4955F201C9D /* Settings.swift */; };
+		B0F61E45D2B1715F386E200A /* Spawn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0581FAF2275BF5CEB650222E /* Spawn.swift */; };
+		13935A652DBBCCB51F57E37A /* ArchiveConformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3284D5D2670FF7AAE03FC10C /* ArchiveConformanceTests.swift */; };
+		1E84CF08F9B0F955A50C6EF6 /* FixtureSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB9608D3744A381F40DEC600 /* FixtureSupport.swift */; };
+		2EA50D3BD4B46D511DAF5604 /* PipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044746500AB118BD752E53D /* PipelineTests.swift */; };
+		C2D2843DBE74E64896D8CC5B /* ProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DE22493D129E402D3F46BA2 /* ProfileTests.swift */; };
+		9ACA398925C78C5E885D25F3 /* RunnerProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */; };
+		21878A708E0266E9BB3E3C84 /* TranscriptCommentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */; };
+		A5A588C7FDEB2CFB180E68D4 /* CLI_VERSION in Resources */ = {isa = PBXBuildFile; fileRef = 28E074626A36B87A2E22CA57 /* CLI_VERSION */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		34FD9F0AAB104332F3EE3348 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E3435DDA2687639586BF0B70;
+			remoteInfo = "ytdl-macos";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		4F8729DA435B160629361204 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		9B075E554171D2FA2B76EF1C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		09F308425C4836A8FECA10EE /* DetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailView.swift; sourceTree = "<group>"; };
+		44C470B6B37DE6EEEA26676A /* DownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
+		433ED4976C3731E80B97A558 /* HealthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthView.swift; sourceTree = "<group>"; };
+		C645230479849D40A7B66BDE /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		0FE3B0F2D18AF508CD5617C8 /* YtdlMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YtdlMacApp.swift; sourceTree = "<group>"; };
+		3CD3CED55DA3146DD065675C /* Archive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Archive.swift; sourceTree = "<group>"; };
+		BAFAE5F1D28A9FBD8510FEE7 /* ArchiveInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveInfo.swift; sourceTree = "<group>"; };
+		CD3CF35C63CE45D9E32FACC5 /* CLIVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIVersion.swift; sourceTree = "<group>"; };
+		D68949CF056ACDE304035354 /* Formatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatting.swift; sourceTree = "<group>"; };
+		AE5AAEA02022E4CEB1E5D24F /* Health.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Health.swift; sourceTree = "<group>"; };
+		30EF33F34ADAF308DF537EE5 /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
+		DD8A3C7AF21998D9FF7D79B6 /* Media.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Media.swift; sourceTree = "<group>"; };
+		7F1D454ED17CF62042CAF554 /* Paths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Paths.swift; sourceTree = "<group>"; };
+		C01A023C059EA80B9BF564C8 /* Pipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pipeline.swift; sourceTree = "<group>"; };
+		277C81C5191086735C1C7E7E /* Profiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Profiles.swift; sourceTree = "<group>"; };
+		9A956F81678EDFE282943874 /* Runner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Runner.swift; sourceTree = "<group>"; };
+		B46FEF33AC69F4955F201C9D /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
+		0581FAF2275BF5CEB650222E /* Spawn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spawn.swift; sourceTree = "<group>"; };
+		3284D5D2670FF7AAE03FC10C /* ArchiveConformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveConformanceTests.swift; sourceTree = "<group>"; };
+		DB9608D3744A381F40DEC600 /* FixtureSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSupport.swift; sourceTree = "<group>"; };
+		F044746500AB118BD752E53D /* PipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipelineTests.swift; sourceTree = "<group>"; };
+		4DE22493D129E402D3F46BA2 /* ProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileTests.swift; sourceTree = "<group>"; };
+		13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerProcessTests.swift; sourceTree = "<group>"; };
+		ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptCommentTests.swift; sourceTree = "<group>"; };
+		28E074626A36B87A2E22CA57 /* CLI_VERSION */ = {isa = PBXFileReference; lastKnownFileType = text; name = CLI_VERSION; path = ../CLI_VERSION; sourceTree = "<group>"; };
+		84337AD8D27FCD69AF2C4FC2 /* ytdl-macos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ytdl-macos.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		DFDED23FA58339F9273F6C84 /* ytdl-macosTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "ytdl-macosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		6EFAB1ECC0D092E20FE51FCD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		54AB89D79F92BD2966E41BD8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		420CFB359C2A33DC60BFB328 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A24A4D6F0745A42F18DEB5EE /* App */,
+				0EFEE179E5A96D175249CFF8 /* Core */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		A24A4D6F0745A42F18DEB5EE /* App */ = {
+			isa = PBXGroup;
+			children = (
+				4F8729DA435B160629361204 /* Components.swift */,
+				9B075E554171D2FA2B76EF1C /* ContentView.swift */,
+				09F308425C4836A8FECA10EE /* DetailView.swift */,
+				44C470B6B37DE6EEEA26676A /* DownloadsView.swift */,
+				433ED4976C3731E80B97A558 /* HealthView.swift */,
+				C645230479849D40A7B66BDE /* LibraryView.swift */,
+				0FE3B0F2D18AF508CD5617C8 /* YtdlMacApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		0EFEE179E5A96D175249CFF8 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				3CD3CED55DA3146DD065675C /* Archive.swift */,
+				BAFAE5F1D28A9FBD8510FEE7 /* ArchiveInfo.swift */,
+				CD3CF35C63CE45D9E32FACC5 /* CLIVersion.swift */,
+				D68949CF056ACDE304035354 /* Formatting.swift */,
+				AE5AAEA02022E4CEB1E5D24F /* Health.swift */,
+				30EF33F34ADAF308DF537EE5 /* JSON.swift */,
+				DD8A3C7AF21998D9FF7D79B6 /* Media.swift */,
+				7F1D454ED17CF62042CAF554 /* Paths.swift */,
+				C01A023C059EA80B9BF564C8 /* Pipeline.swift */,
+				277C81C5191086735C1C7E7E /* Profiles.swift */,
+				9A956F81678EDFE282943874 /* Runner.swift */,
+				B46FEF33AC69F4955F201C9D /* Settings.swift */,
+				0581FAF2275BF5CEB650222E /* Spawn.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		74C0354F987B4FC0FDE2C044 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				3284D5D2670FF7AAE03FC10C /* ArchiveConformanceTests.swift */,
+				DB9608D3744A381F40DEC600 /* FixtureSupport.swift */,
+				F044746500AB118BD752E53D /* PipelineTests.swift */,
+				4DE22493D129E402D3F46BA2 /* ProfileTests.swift */,
+				13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */,
+				ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		518DA81DB9B99529C0C0AEBE = {
+			isa = PBXGroup;
+			children = (
+				420CFB359C2A33DC60BFB328 /* Sources */,
+				74C0354F987B4FC0FDE2C044 /* Tests */,
+				28E074626A36B87A2E22CA57 /* CLI_VERSION */,
+				547D009064F7C3F13BEF3460 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		547D009064F7C3F13BEF3460 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				84337AD8D27FCD69AF2C4FC2 /* ytdl-macos.app */,
+				DFDED23FA58339F9273F6C84 /* ytdl-macosTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E3435DDA2687639586BF0B70 /* ytdl-macos */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D97B77EAD2380603A3F2A82;
+			buildPhases = (
+				4821909E9BF9E73E471FEA84 /* Sources */,
+				6EFAB1ECC0D092E20FE51FCD /* Frameworks */,
+				F667297ED3AB90EAC07798D4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "ytdl-macos";
+			productName = "ytdl-macos";
+			productReference = 84337AD8D27FCD69AF2C4FC2;
+			productType = "com.apple.product-type.application";
+		};
+		A700229C3AC2DAE057FE5B27 /* ytdl-macosTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0F471B4923D46E58DCE40A0E;
+			buildPhases = (
+				BDA9E329ACCE0E746140CA84 /* Sources */,
+				54AB89D79F92BD2966E41BD8 /* Frameworks */,
+				25B7C02526925672442B0E39 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AE6F897E25D6817EBA23A3C8 /* PBXTargetDependency */,
+			);
+			name = "ytdl-macosTests";
+			productName = "ytdl-macosTests";
+			productReference = DFDED23FA58339F9273F6C84;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					E3435DDA2687639586BF0B70 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					A700229C3AC2DAE057FE5B27 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = E3435DDA2687639586BF0B70;
+					};
+				};
+			};
+			buildConfigurationList = 1F4E3D13C2320EDA50221924;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 518DA81DB9B99529C0C0AEBE;
+			productRefGroup = 547D009064F7C3F13BEF3460 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E3435DDA2687639586BF0B70 /* ytdl-macos */,
+				A700229C3AC2DAE057FE5B27 /* ytdl-macosTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F667297ED3AB90EAC07798D4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		25B7C02526925672442B0E39 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A5A588C7FDEB2CFB180E68D4 /* CLI_VERSION in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4821909E9BF9E73E471FEA84 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1EBABA0DC82A4D1079754A0B /* Components.swift in Sources */,
+				59BB1DF3C824FB3A489C8A02 /* ContentView.swift in Sources */,
+				084C8E6BCDA9B15356ADA55C /* DetailView.swift in Sources */,
+				970AD6BA32A5C79F8A27826B /* DownloadsView.swift in Sources */,
+				E5522F204ED813BB10972102 /* HealthView.swift in Sources */,
+				F053F6AAF2F939D473DB3EE1 /* LibraryView.swift in Sources */,
+				917EB018C25995BC1D78D459 /* YtdlMacApp.swift in Sources */,
+				04558C4912998416FEA91B1E /* Archive.swift in Sources */,
+				7EDB0DEBBE76E9DB57EFEE49 /* ArchiveInfo.swift in Sources */,
+				ED6F70C3E299949F891FC76F /* CLIVersion.swift in Sources */,
+				C95794EC45192F4105FCB0B4 /* Formatting.swift in Sources */,
+				BA72CD40B970AABCA291B6D4 /* Health.swift in Sources */,
+				BB0EABABF6999AE907B7DF4F /* JSON.swift in Sources */,
+				315B244B93553017BA6D8C43 /* Media.swift in Sources */,
+				E081B9F3E717BDDD18EBDA87 /* Paths.swift in Sources */,
+				AB0C5674A4E41C66C560C977 /* Pipeline.swift in Sources */,
+				4D6AEC3FF40F22BC767FD63A /* Profiles.swift in Sources */,
+				C7E39767C6917D6B50F3C847 /* Runner.swift in Sources */,
+				520FC42CB60F2E6EBB84045A /* Settings.swift in Sources */,
+				B0F61E45D2B1715F386E200A /* Spawn.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BDA9E329ACCE0E746140CA84 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				13935A652DBBCCB51F57E37A /* ArchiveConformanceTests.swift in Sources */,
+				1E84CF08F9B0F955A50C6EF6 /* FixtureSupport.swift in Sources */,
+				2EA50D3BD4B46D511DAF5604 /* PipelineTests.swift in Sources */,
+				C2D2843DBE74E64896D8CC5B /* ProfileTests.swift in Sources */,
+				9ACA398925C78C5E885D25F3 /* RunnerProcessTests.swift in Sources */,
+				21878A708E0266E9BB3E3C84 /* TranscriptCommentTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AE6F897E25D6817EBA23A3C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E3435DDA2687639586BF0B70 /* ytdl-macos */;
+			targetProxy = 34FD9F0AAB104332F3EE3348 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		92E165A9035A603BE73D2E62 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E1D3BBA94590957B0374D6E9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		82000B87E0EC13AD7FD6DA43 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.avimehandru.YtdlMac;
+				PRODUCT_MODULE_NAME = YtdlMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		16ACE556BD5CA3C51FD3F043 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.avimehandru.YtdlMac;
+				PRODUCT_MODULE_NAME = YtdlMac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		90F4E5D4D3BBBEA0FD776229 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.avimehandru.YtdlMacTests;
+				PRODUCT_MODULE_NAME = YtdlMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ytdl-macos.app/Contents/MacOS/ytdl-macos";
+			};
+			name = Debug;
+		};
+		FD26A3177CD7F198D7EFE79E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.avimehandru.YtdlMacTests;
+				PRODUCT_MODULE_NAME = YtdlMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ytdl-macos.app/Contents/MacOS/ytdl-macos";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1F4E3D13C2320EDA50221924 /* Build configuration list for PBXProject */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				92E165A9035A603BE73D2E62 /* Debug */,
+				E1D3BBA94590957B0374D6E9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1D97B77EAD2380603A3F2A82 /* Build configuration list for ytdl-macos */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				82000B87E0EC13AD7FD6DA43 /* Debug */,
+				16ACE556BD5CA3C51FD3F043 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0F471B4923D46E58DCE40A0E /* Build configuration list for ytdl-macosTests */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				90F4E5D4D3BBBEA0FD776229 /* Debug */,
+				FD26A3177CD7F198D7EFE79E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}
