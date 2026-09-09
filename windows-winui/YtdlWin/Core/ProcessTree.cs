@@ -230,7 +230,19 @@ public sealed class JobObject : IDisposable
          * is single figures; 256 is already far past anything real. */
         for (var capacity = 256; capacity <= 4096; capacity *= 4)
         {
-            var headerSize = IntPtr.Size * 2;   // two ULONG_PTR-aligned counts
+            /* JOBOBJECT_BASIC_PROCESS_ID_LIST is:
+             *
+             *     DWORD     NumberOfAssignedProcesses;   // 4 bytes
+             *     DWORD     NumberOfProcessIdsInList;    // 4 bytes
+             *     ULONG_PTR ProcessIdList[1];            // 8 on x64, 4 on x86
+             *
+             * so the header is EIGHT bytes on both architectures -- the two
+             * DWORDs already land the array on its natural alignment, so no
+             * padding is inserted. Reading them as pointer-sized values instead
+             * (IntPtr.Size * 2) is wrong twice over: it merges the two counts
+             * into one number and then starts the array 8 bytes late, which
+             * hands back pointer-shaped garbage rather than pids. */
+            const int headerSize = 8;
             var size = headerSize + IntPtr.Size * capacity;
             var buffer = Marshal.AllocHGlobal(size);
             try
@@ -244,9 +256,9 @@ public sealed class JobObject : IDisposable
                     return System.Array.Empty<int>();
                 }
 
-                var assigned = Marshal.ReadIntPtr(buffer, 0).ToInt64();
-                var returned = Marshal.ReadIntPtr(buffer, IntPtr.Size).ToInt64();
-                var count = (int)System.Math.Min(returned, capacity);
+                // Both counts are DWORDs, so Int32 -- not IntPtr.
+                var returned = Marshal.ReadInt32(buffer, 4);
+                var count = System.Math.Max(0, System.Math.Min(returned, capacity));
 
                 var pids = new List<int>(count);
                 for (var i = 0; i < count; i++)
@@ -254,7 +266,6 @@ public sealed class JobObject : IDisposable
                     var pid = Marshal.ReadIntPtr(buffer, headerSize + i * IntPtr.Size).ToInt64();
                     pids.Add((int)pid);
                 }
-                _ = assigned;
                 return pids;
             }
             catch (Exception) { return System.Array.Empty<int>(); }
@@ -515,9 +526,27 @@ public static class ProcessTree
         var chunk = new byte[8192];
         var pendingCr = false;
         var atStart = true;
+        var overflowed = false;
 
         void Emit(bool transient)
         {
+            /* A line that ran past the cap is dropped ENTIRELY, not down to
+             * whatever happened to arrive after the last clear. Clearing the
+             * buffer on overflow and carrying on -- which is what this did, and
+             * what the GTK app at pipeline.c:982 and the macOS app's
+             * Spawn.pumpLines still do -- leaves a tail fragment that then gets
+             * emitted as though it were a real line: it starts mid-token, it
+             * looks like genuine output, and its length is an artefact of where
+             * the 64KB boundary happened to fall. Nothing is better than a
+             * plausible lie. */
+            if (overflowed)
+            {
+                overflowed = false;
+                buffer.Clear();
+                atStart = false;
+                return;
+            }
+
             var bytes = buffer.ToArray();
             buffer.Clear();
 
@@ -595,10 +624,20 @@ public static class ProcessTree
                         continue;
                     }
 
+                    /* Once a line has overflowed, every remaining byte of it
+                     * is discarded on arrival -- there is nothing to accumulate
+                     * into, and the flag is what makes Emit drop it rather than
+                     * ship a fragment. */
+                    if (overflowed) continue;
+
                     buffer.Add(b);
                     /* A single line this long is not a line; drop it rather than
                      * let a runaway stream grow the buffer without bound. */
-                    if (buffer.Count > 64 * 1024) buffer.Clear();
+                    if (buffer.Count > 64 * 1024)
+                    {
+                        overflowed = true;
+                        buffer.Clear();
+                    }
                 }
             }
         }
@@ -608,6 +647,6 @@ public static class ProcessTree
          * still in the buffer here, and it is the line that matters: a failure
          * message is what fills in a history row's LastLine. Dropping it at EOF
          * loses exactly the output somebody would go looking for. */
-        if (buffer.Count > 0) Emit(transient: false);
+        if (buffer.Count > 0 || overflowed) Emit(transient: false);
     }
 }
