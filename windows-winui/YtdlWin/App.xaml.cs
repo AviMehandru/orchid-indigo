@@ -40,8 +40,21 @@ public partial class App : Application
         {
             try
             {
+                /* The build stamp is here because its absence already cost
+                 * a diagnosis: a stack trace with no way to tell which binary
+                 * produced it means "is this entry stale?" has to be answered
+                 * by comparing line numbers against git history. */
+                var built = "unknown";
+                try
+                {
+                    var dll = System.IO.Path.Combine(AppContext.BaseDirectory, "YtdlWin.dll");
+                    if (System.IO.File.Exists(dll))
+                        built = System.IO.File.GetLastWriteTime(dll).ToString("O");
+                }
+                catch (Exception) { /* the stamp is a nicety, the trace is not */ }
+
                 var path = Core.Paths.Join(Core.Paths.StateDir(), "crash.log");
-                var text = $"{DateTimeOffset.Now:O}\n{e.Exception}\n\n";
+                var text = $"{DateTimeOffset.Now:O}  build {built}\n{e.Exception}\n\n";
                 System.IO.Directory.CreateDirectory(Core.Paths.StateDir());
                 System.IO.File.AppendAllText(path, text);
             }

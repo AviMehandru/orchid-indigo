@@ -12,6 +12,7 @@
 
 using System;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -34,11 +35,22 @@ public sealed partial class MainWindow : Window
         _model.Changed += OnModelChanged;
         _model.Alert += OnAlert;
 
-        /* A sensible minimum and no adaptive story below it. The window is
-         * still resizable; what this stops is a width at which the Downloads
-         * form's labels and controls overlap, which is the state a user reaches
-         * by dragging and then reports as a rendering bug. */
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1180, 880));
+        /* Clamped to the display's work area, not a fixed 1180x880.
+         *
+         * A hardcoded height taller than the screen pushes the bottom of the
+         * window off the desktop, and the bottom of THIS window is the status
+         * line -- so on any display shorter than 880 the status bar simply is
+         * not there, with nothing on screen to say why. Laptops and virtual
+         * machines are routinely 768 tall, so that is the common case rather
+         * than the exotic one. The window is then centred, because a clamped
+         * window left at the default position can still hang off an edge. */
+        var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        var width = Math.Min(1180, Math.Max(640, work.Width - 80));
+        var height = Math.Min(880, Math.Max(480, work.Height - 80));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+        AppWindow.Move(new Windows.Graphics.PointInt32(
+            work.X + (work.Width - width) / 2,
+            work.Y + (work.Height - height) / 2));
 
         Nav.SelectedItem = Nav.MenuItems[0];
         ContentFrame.Navigate(typeof(LibraryPage));

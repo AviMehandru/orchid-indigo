@@ -85,10 +85,12 @@
                                    Description="A ceiling, not a demand — a video that was never published at this height comes down at the best it has.">
                     <ComboBox x:Name="QualityBox" MinWidth="180" SelectionChanged="OnOptionChanged" />
                 </local:OptionRow>
-                <local:OptionRow Header="Video codec">
+                <local:OptionRow Header="Video codec"
+                                 Description="AVC1 is the one Windows always decodes in this window. VP9 and AV1 are smaller at the same quality but need a media extension from the Store to play here — the file is still archived correctly either way.">
                     <ComboBox x:Name="CodecBox" MinWidth="180" SelectionChanged="OnOptionChanged" />
                 </local:OptionRow>
-                <local:OptionRow Header="Audio codec">
+                <local:OptionRow Header="Audio codec"
+                                 Description="Opus is what YouTube serves natively, so leaving this alone avoids a re-encode. AAC is the safer choice if these files will be played by something old.">
                     <ComboBox x:Name="AudioCodecBox" MinWidth="180" SelectionChanged="OnOptionChanged" />
                 </local:OptionRow>
                 <local:OptionRow Header="Container"
