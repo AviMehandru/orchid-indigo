@@ -105,7 +105,14 @@ public static class Controls
 
     /// A titled block of rows, which is what the Health and Detail panes are
     /// made of.
-    public static StackPanel SectionBox(string title, UIElement? trailing, params UIElement[] rows)
+    /* `trailing` is a FrameworkElement, not a UIElement, and that is a WinUI
+     * signature rather than a preference: Grid.SetColumn takes a
+     * FrameworkElement here, where the WPF overload of the same name takes a
+     * UIElement. Every other Grid.SetColumn call site in this app passes a
+     * concrete Border, Button, TextBlock or StackPanel and so never noticed;
+     * this one, declared as the base type, is the only place it shows up. */
+    public static StackPanel SectionBox(string title, FrameworkElement? trailing,
+                                        params UIElement[] rows)
     {
         var header = new Grid();
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

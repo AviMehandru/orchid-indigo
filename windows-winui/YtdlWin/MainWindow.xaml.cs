@@ -109,7 +109,10 @@ public sealed partial class MainWindow : Window
     {
         if (args.SelectedItem is not NavigationViewItem item) return;
 
-        var page = item.Tag as string switch
+        /* The parentheses are load-bearing. Without them this parses as
+         * `item.Tag as (string switch { ... })`, because `as` binds looser than
+         * a switch expression, which is what CS8848 was warning about. */
+        var page = (item.Tag as string) switch
         {
             "downloads" => typeof(DownloadsPage),
             "health" => typeof(HealthPage),
