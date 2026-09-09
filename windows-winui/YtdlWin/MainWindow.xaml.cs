@@ -74,7 +74,23 @@ public sealed partial class MainWindow : Window
 
         var rescan = new KeyboardAccelerator { Key = VirtualKey.R, Modifiers = VirtualKeyModifiers.Control };
         rescan.Invoked += (_, e) => { e.Handled = true; _model.StartScan(); };
-        if (Content is UIElement root) root.KeyboardAccelerators.Add(rescan);
+
+        /* Alt+Left is wired by hand. A WinUI desktop Frame does not bring the
+         * shell's back gestures with it, which the XAML in this file used to
+         * claim it did. */
+        var back = new KeyboardAccelerator { Key = VirtualKey.Left, Modifiers = VirtualKeyModifiers.Menu };
+        back.Invoked += (_, e) =>
+        {
+            e.Handled = true;
+            if (ContentFrame.CanGoBack) ContentFrame.GoBack();
+            UpdateBackButton();
+        };
+
+        if (Content is UIElement root)
+        {
+            root.KeyboardAccelerators.Add(rescan);
+            root.KeyboardAccelerators.Add(back);
+        }
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
@@ -148,11 +164,21 @@ public sealed partial class MainWindow : Window
         UpdateBackButton();
     }
 
+    /* BOTH properties, and that is the whole bug this fixes.
+     *
+     * NavigationView has IsBackButtonVisible and IsBackEnabled, and
+     * IsBackEnabled defaults to FALSE. Setting only the first draws the button
+     * and leaves it inert: the detail page opens and there is then no way out
+     * of it, which is exactly how it behaved. Nothing warns about this -- a
+     * greyed-out button looks like a considered state rather than a property
+     * nobody set. */
     public void UpdateBackButton()
     {
-        Nav.IsBackButtonVisible = ContentFrame.CanGoBack
+        var canGoBack = ContentFrame.CanGoBack;
+        Nav.IsBackButtonVisible = canGoBack
             ? NavigationViewBackButtonVisible.Visible
             : NavigationViewBackButtonVisible.Collapsed;
+        Nav.IsBackEnabled = canGoBack;
     }
 
     /// Navigate the shared frame, which is how the Library opens a video.

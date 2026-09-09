@@ -10,9 +10,11 @@
         THE SHELL IS THE PLATFORM'S, NOT HAND-BUILT.
 
         NavigationView owns the pane, the three pages, the back button and the
-        hamburger; its Frame owns library-to-detail, which is where Back, Alt+Left
-        and the mouse's back button come from for free. AutoSuggestBox in the
-        header owns search.
+        hamburger; its Frame owns library-to-detail. The back button needs both
+        IsBackButtonVisible AND IsBackEnabled set, since the latter defaults to
+        false and a button that is only visible does nothing; Alt+Left is a
+        KeyboardAccelerator wired in the code-behind. Neither is free, whatever
+        an earlier version of this comment said. AutoSuggestBox owns search.
 
         NavigationView is also where the adaptive story comes from, and it is
         worth saying what this app does and does not promise. The GTK app is

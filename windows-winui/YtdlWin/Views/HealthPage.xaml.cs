@@ -263,8 +263,7 @@ public sealed partial class HealthPage : Page
             "folder, or Complete Archive itself.");
         choose.Click += async (_, _) =>
         {
-            var picked = await DownloadsPage.PickFolderAsync(
-                "Choose the archive folder (a data root, or Complete Archive itself)");
+            var picked = await DownloadsPage.PickFolderAsync();
             if (picked is null) return;
             Model.SetArchiveRoot(picked);
             await RefreshAsync(force: false);

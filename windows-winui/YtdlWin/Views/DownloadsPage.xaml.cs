@@ -336,7 +336,7 @@ public sealed partial class DownloadsPage : Page
 
     private async void OnChooseFolder(object sender, RoutedEventArgs e)
     {
-        var picked = await PickFolderAsync("Choose a destination folder");
+        var picked = await PickFolderAsync();
         if (picked is null) return;
 
         Form.Opts.DataRoot = picked;
@@ -361,14 +361,20 @@ public sealed partial class DownloadsPage : Page
      * FileTypeFilter looks pointless on a FOLDER picker and is not optional
      * either -- the picker fails to open with an empty filter list. "*" is the
      * documented incantation. */
-    internal static async System.Threading.Tasks.Task<string?> PickFolderAsync(string commitText)
+    /* No caller-supplied button text. FolderPicker has CommitButtonText and
+     * nothing else: unlike NSOpenPanel, which has a `prompt` for the button and
+     * a separate `message` for the explanation, there is nowhere here to put a
+     * sentence. Passing one in made the confirm button read as a paragraph. The
+     * explanation belongs on the control that opens the picker, which already
+     * carries it as a tooltip. */
+    internal static async System.Threading.Tasks.Task<string?> PickFolderAsync()
     {
         try
         {
             var picker = new Windows.Storage.Pickers.FolderPicker
             {
                 SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.VideosLibrary,
-                CommitButtonText = commitText,
+                CommitButtonText = "Choose",
             };
             picker.FileTypeFilter.Add("*");
 
