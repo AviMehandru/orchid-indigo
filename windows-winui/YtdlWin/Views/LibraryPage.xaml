@@ -25,7 +25,7 @@
 
                         <!--
                             The duration goes ON the thumbnail, where every video
-                            player and every video site puts it -- not in the
+                            player and every video site puts it — not in the
                             subtitle competing with the channel name and the date
                             for the same run of small grey text. Collapsed rather
                             than blank when there is no duration: an empty badge
@@ -51,7 +51,7 @@
                         <!--
                             A single pill, not an ItemsControl of them. A UIElement
                             can have exactly one parent, and a GridView RECYCLES its
-                            item containers as it scrolls -- so handing a list of
+                            item containers as it scrolls — so handing a list of
                             live Border objects to an ItemsControl inside a
                             virtualised template is the classic "Element is already
                             the child of another element" crash, hit only once the
@@ -98,7 +98,7 @@
         <!--
             GridView, not an ItemsRepeater in a ScrollViewer.
 
-            GridView virtualises out of the box -- it realises only the cards
+            GridView virtualises out of the box — it realises only the cards
             that are on screen, so an archive with several thousand videos costs
             the same to open as one with twenty, which is the shape of archive
             this tool exists to produce. It also brings keyboard navigation,

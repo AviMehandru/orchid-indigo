@@ -35,7 +35,7 @@
             is in the box, Matroska has been readable since Windows 10, and VP9,
             Opus, AV1 and HEVC each depend on a Store media extension that may or
             may not be installed on this machine. So the player is given the
-            file and MediaFailed decides -- and because ffprobe has already read
+            file and MediaFailed decides — and because ffprobe has already read
             the container by then, the note can name the codec that actually
             failed rather than guessing from the extension.
 

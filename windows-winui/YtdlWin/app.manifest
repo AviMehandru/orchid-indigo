@@ -8,7 +8,7 @@
     It is required and it is NOT sufficient: it only takes effect when the
     machine's LongPathsEnabled policy is also on, which on a default install it
     is not. Paths.Extended() is the other half, and the reason both exist is at
-    the top of Paths.cs -- this pipeline's per-video paths run to about 240
+    the top of Paths.cs — this pipeline's per-video paths run to about 240
     characters before the data root is prefixed, so a Windows reader that does
     nothing about this silently loses the most deeply nested files in a video
     folder and shows a short library with no error anywhere.

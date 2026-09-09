@@ -18,7 +18,7 @@
         instead of a tooltip nobody hovers over.
 
         The Windows control that looks exactly like this is SettingsCard, and it
-        is deliberately not used -- it lives in the WinUI Community Toolkit,
+        is deliberately not used — it lives in the WinUI Community Toolkit,
         which is a third-party package, and every app in this repository depends
         only on what its own platform ships. See Views/OptionRow.cs.
 
@@ -167,7 +167,7 @@
             <!--
                 A ListView of lines rather than one big TextBlock. Appending to a
                 TextBlock's Text re-lays out the whole document on every redraw,
-                and a --sync of a large channel produces thousands of lines. The
+                and a sync run over a large channel produces thousands of lines. The
                 transient line is a separate row pinned at the bottom, which is
                 what makes a \r redraw replace its predecessor instead of adding
                 a row.

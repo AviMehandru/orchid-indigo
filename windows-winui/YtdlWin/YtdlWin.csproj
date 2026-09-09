@@ -37,7 +37,7 @@
       whose filesystem access is a separate conversation, for no benefit to a
       tool somebody installs alongside a PowerShell pipeline. Set
       WindowsPackageType back to MSIX and add a Package.appxmanifest if a
-      packaged build is ever wanted -- everything in the app is written to work
+      packaged build is ever wanted — everything in the app is written to work
       either way, which is why Settings uses a plain JSON file rather than
       ApplicationData.Current (that API throws outright when unpackaged).
     -->
@@ -51,7 +51,7 @@
       of its README: the GTK app builds with -Werror and this should too. It is
       off because a deprecation notice failing the build before the first clean
       one would be noise rather than signal, and this code has never seen a
-      compiler at all. Turn it on once it compiles clean -- it is this one line.
+      compiler at all. Turn it on once it compiles clean — it is this one line.
     -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <WarningLevel>5</WarningLevel>

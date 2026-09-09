@@ -17,7 +17,7 @@
         NavigationView is also where the adaptive story comes from, and it is
         worth saying what this app does and does not promise. The GTK app is
         adaptive down to 360px because GNOME targets phone-shaped windows. Windows
-        does not, so this sets a sensible minimum and stops -- but NavigationView's
+        does not, so this sets a sensible minimum and stops — but NavigationView's
         own Compact and Minimal display modes still collapse the pane to icons and
         then to a hamburger as the window narrows, which is the platform's answer
         and costs nothing to accept.
@@ -60,11 +60,11 @@
 
             libadwaita has AdwToastOverlay and the GTK app uses it. WinUI has
             InfoBar, which is a banner that takes a row of layout and has to be
-            dismissed, not a toast -- so using it for "412 videos · 38 channels"
+            dismissed, not a toast — so using it for "412 videos · 38 channels"
             would mean a bar the user closes and then never sees the counts
             again. A status line at the bottom is what the macOS app settled on
-            for the same reason, and the one case that must interrupt -- no
-            archive at all -- gets a ContentDialog instead.
+            for the same reason, and the one case that must interrupt — no
+            archive at all — gets a ContentDialog instead.
         -->
         <Border
             Grid.Row="1"
