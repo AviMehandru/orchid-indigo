@@ -30,7 +30,17 @@ public sealed partial class HealthPage : Page
 
     private AppModel Model => AppModel.Current;
 
-    public HealthPage() => InitializeComponent();
+    public HealthPage()
+    {
+        InitializeComponent();
+
+        /* Selecting HERE rather than with IsSelected="True" in the markup. In
+         * markup the selection lands mid-parse, before LogText exists, and
+         * OnLogChoiceChanged then dereferences null inside the constructor. By
+         * this line every named element has been created, so the same
+         * SelectionChanged is safe. */
+        LogChoice.SelectedIndex = 0;
+    }
 
     protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
@@ -311,6 +321,13 @@ public sealed partial class HealthPage : Page
 
     private void ReloadLog()
     {
+        /* Defence in depth for the bug above. SelectionChanged can reach this
+         * before the visual tree is complete, and the XAML generator types
+         * these fields as non-nullable while cheerfully leaving them null until
+         * it gets to them. A page that renders without a log tail beats a
+         * process that disappears. */
+        if (LogChoice is null || LogText is null) return;
+
         var name = (LogChoice.SelectedItem as ComboBoxItem)?.Tag as string ?? "download.log";
         var path = Paths.Join(Paths.Join(Model.Settings.ResolvedDataRoot, @"Archive Logs\Logs"), name);
         var tail = Health.LogTail(path, 300);

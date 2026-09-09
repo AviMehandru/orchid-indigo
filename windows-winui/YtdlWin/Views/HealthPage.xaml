@@ -31,9 +31,19 @@
             <StackPanel Spacing="8" Margin="0,0,0,20">
                 <Grid>
                     <TextBlock Text="Logs" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <!--
+                        NO IsSelected HERE. Setting the selection in markup fires
+                        SelectionChanged while this file is still being parsed, and
+                        LogText below has not been created at that moment, so the
+                        handler dereferences null and the page constructor throws.
+                        A page constructor that throws kills navigation and takes
+                        the process with it, silently. The selection is set in the
+                        code-behind constructor instead, after InitializeComponent
+                        has created every named element.
+                    -->
                     <ComboBox x:Name="LogChoice" HorizontalAlignment="Right" MinWidth="160"
                               SelectionChanged="OnLogChoiceChanged">
-                        <ComboBoxItem Content="download.log" Tag="download.log" IsSelected="True" />
+                        <ComboBoxItem Content="download.log" Tag="download.log" />
                         <ComboBoxItem Content="archive.txt" Tag="archive.txt" />
                     </ComboBox>
                 </Grid>
