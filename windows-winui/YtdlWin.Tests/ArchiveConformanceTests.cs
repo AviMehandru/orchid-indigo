@@ -85,7 +85,7 @@ public sealed class ArchiveConformanceTests : IDisposable
         Assert.NotNull(pin);
         Assert.True(pin!.RequiresArchiveLayout.HasValue,
             "CLI_VERSION has no REQUIRES_ARCHIVE_LAYOUT line.");
-        Assert.Equal(pin.RequiresArchiveLayout!.Value, ArchiveLayout.Supported);
+        Assert.Equal(ArchiveLayout.Supported, pin.RequiresArchiveLayout!.Value);
     }
 
     // MARK: - Layout 2 media rules

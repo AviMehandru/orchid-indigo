@@ -282,6 +282,82 @@ public sealed class JobObject : IDisposable
             _handle = IntPtr.Zero;
         }
     }
+
+    /* Nested in JobObject, and it has to be. Every call site above is in this
+     * class and ProcessTree never touches it, so living down there as a private
+     * member of ProcessTree put it out of scope for its only consumer -- which
+     * is exactly what it did on the first compile, twelve times over. */
+    private static class Native
+    {
+        public const int JobObjectBasicProcessIdList = 3;
+        public const int JobObjectExtendedLimitInformation = 9;
+        public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+        public const int ErrorMoreData = 234;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct IO_COUNTERS
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string? lpName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetInformationJobObject(
+            IntPtr hJob, int JobObjectInformationClass,
+            IntPtr lpJobObjectInformation, uint cbJobObjectInformationLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool QueryInformationJobObject(
+            IntPtr hJob, int JobObjectInformationClass,
+            IntPtr lpJobObjectInformation, uint cbJobObjectInformationLength,
+            out uint lpReturnLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool TerminateJobObject(IntPtr hJob, uint uExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CloseHandle(IntPtr hObject);
+    }
 }
 
 public static class ProcessTree
@@ -533,77 +609,5 @@ public static class ProcessTree
          * message is what fills in a history row's LastLine. Dropping it at EOF
          * loses exactly the output somebody would go looking for. */
         if (buffer.Count > 0) Emit(transient: false);
-    }
-
-    private static class Native
-    {
-        public const int JobObjectBasicProcessIdList = 3;
-        public const int JobObjectExtendedLimitInformation = 9;
-        public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
-        public const int ErrorMoreData = 234;
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct IO_COUNTERS
-        {
-            public ulong ReadOperationCount;
-            public ulong WriteOperationCount;
-            public ulong OtherOperationCount;
-            public ulong ReadTransferCount;
-            public ulong WriteTransferCount;
-            public ulong OtherTransferCount;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct JOBOBJECT_BASIC_LIMIT_INFORMATION
-        {
-            public long PerProcessUserTimeLimit;
-            public long PerJobUserTimeLimit;
-            public uint LimitFlags;
-            public UIntPtr MinimumWorkingSetSize;
-            public UIntPtr MaximumWorkingSetSize;
-            public uint ActiveProcessLimit;
-            public UIntPtr Affinity;
-            public uint PriorityClass;
-            public uint SchedulingClass;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-        {
-            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-            public IO_COUNTERS IoInfo;
-            public UIntPtr ProcessMemoryLimit;
-            public UIntPtr JobMemoryLimit;
-            public UIntPtr PeakProcessMemoryUsed;
-            public UIntPtr PeakJobMemoryUsed;
-        }
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string? lpName);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool SetInformationJobObject(
-            IntPtr hJob, int JobObjectInformationClass,
-            IntPtr lpJobObjectInformation, uint cbJobObjectInformationLength);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool QueryInformationJobObject(
-            IntPtr hJob, int JobObjectInformationClass,
-            IntPtr lpJobObjectInformation, uint cbJobObjectInformationLength,
-            out uint lpReturnLength);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool TerminateJobObject(IntPtr hJob, uint uExitCode);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool CloseHandle(IntPtr hObject);
     }
 }
