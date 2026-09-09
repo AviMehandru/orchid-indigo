@@ -135,7 +135,7 @@ public sealed partial class HealthPage : Page
             ? PillVariant.Ok
             : (d.Importance == "required" ? PillVariant.Error : PillVariant.Warn);
 
-        var grid = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 3, 0, 3) };
+        var grid = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 2, 0, 2) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -148,19 +148,34 @@ public sealed partial class HealthPage : Page
         grid.Children.Add(pill);
 
         /* The subtitle is where it is, when it is there, and why it matters when
-         * it is not. The note only earns its space when something is wrong: on a
-         * healthy machine seven paragraphs of explanation is just noise to
-         * scroll past. */
-        var text = new StackPanel { Spacing = 2 };
+         * it is not -- CAPPED, with the rest on a tooltip.
+         *
+         * These notes run to two or four sentences each, and the original design
+         * let them wrap freely on the reasoning that a note only earns its space
+         * when something is wrong. That gets the common case backwards: a
+         * machine with nothing installed yet has SIX missing dependencies, so
+         * the pane is at its most verbose exactly when somebody opens it for the
+         * first time, and the rest of the page ends up below a screen of prose.
+         * One line when found, two when missing, full text on hover. Rows stay a
+         * uniform height whatever the window width, which is the property that
+         * makes a status table scannable. */
+        var detail = d.Found ? (d.Path ?? "") : d.Note;
+        var text = new StackPanel { Spacing = 0 };
         text.Children.Add(new TextBlock { Text = d.Name });
-        text.Children.Add(new TextBlock
+
+        var note = new TextBlock
         {
-            Text = d.Found ? (d.Path ?? "") : d.Note,
+            Text = detail,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
+            MaxLines = d.Found ? 1 : 2,
+            TextTrimming = TextTrimming.CharacterEllipsis,
             IsTextSelectionEnabled = true,
             Foreground = Controls.Resource<Brush>("TextFillColorSecondaryBrush"),
-        });
+        };
+        if (detail.Length > 0) ToolTipService.SetToolTip(note, detail);
+        text.Children.Add(note);
+
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
 
@@ -201,7 +216,7 @@ public sealed partial class HealthPage : Page
          * is exactly the confusion this list settles. */
         var rows = _files.Select(f =>
         {
-            var grid = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 3, 0, 3) };
+            var grid = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 2, 0, 2) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -212,18 +227,27 @@ public sealed partial class HealthPage : Page
             Grid.SetColumn(pill, 0);
             grid.Children.Add(pill);
 
-            var text = new StackPanel { Spacing = 2 };
+            // Same treatment as a dependency row: these are long absolute paths
+            // and wrapping six of them fills a screen on its own.
+            var detail = f.Present
+                ? $"{Format.Bytes(f.Size)} · {Format.Timestamp(f.Modified)} · {f.Path}"
+                : f.Path;
+
+            var text = new StackPanel { Spacing = 0 };
             text.Children.Add(new TextBlock { Text = f.Name });
-            text.Children.Add(new TextBlock
+
+            var note = new TextBlock
             {
-                Text = f.Present
-                    ? $"{Format.Bytes(f.Size)} · {Format.Timestamp(f.Modified)} · {f.Path}"
-                    : f.Path,
+                Text = detail,
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
+                MaxLines = 1,
+                TextTrimming = TextTrimming.CharacterEllipsis,
                 IsTextSelectionEnabled = true,
                 Foreground = Controls.Resource<Brush>("TextFillColorSecondaryBrush"),
-            });
+            };
+            ToolTipService.SetToolTip(note, detail);
+            text.Children.Add(note);
             Grid.SetColumn(text, 1);
             grid.Children.Add(text);
             return (UIElement)grid;
