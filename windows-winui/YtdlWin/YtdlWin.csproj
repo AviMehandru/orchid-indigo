@@ -1,16 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    THE TWO PackageReference VERSIONS BELOW ARE THE MOST LIKELY THING IN THIS
-    REPOSITORY TO FAIL ON A FIRST BUILD, and they are unverified. Nothing in
-    this app has ever been compiled and no NuGet feed was reachable from the
-    environment it was written in, so these are plausible version strings rather
-    than confirmed ones. If `dotnet restore` cannot find them, that is expected
-    work: check nuget.org for the current Microsoft.WindowsAppSDK and
-    Microsoft.Windows.SDK.BuildTools and pin what is actually there. Do not read
-    a restore failure here as a sign that something deeper is wrong.
-  -->
+    Package versions below are the ones a real restore resolved on 2026-09-09,
+    not guesses: Microsoft.WindowsAppSDK 2.4.0. The first attempt pinned 1.6.x,
+    which was a major version behind.
 
+    Microsoft.Windows.SDK.BuildTools is deliberately NOT referenced here.
+    Nothing in this project uses it directly; the App SDK depends on it and
+    knows which version it needs. Pinning it as well is how the first build
+    failed: an explicit reference at 10.0.26100.1742 sat below the
+    10.0.26100.4654 that WindowsAppSDK 2.4.0 requires, and NuGet treats a
+    direct reference below a transitive requirement as a downgrade and refuses
+    it outright (NU1605). Adding it back means owning that version forever.
+  -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
@@ -42,7 +44,7 @@
       ApplicationData.Current (that API throws outright when unpackaged).
     -->
     <WindowsPackageType>None</WindowsPackageType>
-    <EnableMsixTooling>true</EnableMsixTooling>
+    <EnableMsixTooling>false</EnableMsixTooling>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
 
@@ -58,8 +60,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.240923002" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
   </ItemGroup>
 
   <ItemGroup>

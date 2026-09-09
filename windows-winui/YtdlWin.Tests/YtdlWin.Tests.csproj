@@ -49,12 +49,13 @@
 
   <ItemGroup>
     <!--
-      As with the app's package references, these versions are UNVERIFIED —       no NuGet feed was reachable from the environment this was written in.
-      If restore fails, check nuget.org and pin what is actually current.
+      Resolved by a real restore on 2026-09-09 and confirmed green: all 164
+      tests pass against these. Note the runner is 4.x while xunit itself is
+      2.9.x; that pairing is what nuget resolved and what ran.
     -->
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
-    <PackageReference Include="xunit" Version="2.9.2" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
   </ItemGroup>
 
   <ItemGroup>
