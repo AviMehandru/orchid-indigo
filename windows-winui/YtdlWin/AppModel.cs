@@ -114,6 +114,10 @@ public sealed class AppModel
     {
         _dispatcher = dispatcher;
         Settings = Settings.Load();
+        /* Before the store is read, because a fresh install has to have its
+         * default profile on disk by the time the Profiles menu is built. Does
+         * nothing on every launch after the first. */
+        ProfileStore.SeedDefaultIfMissing();
         Profiles = ProfileStore.Load();
         Form = new DownloadsFormState(Settings, Profiles);
         ArchiveRoot = ResolveRoot();

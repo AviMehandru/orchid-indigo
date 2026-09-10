@@ -66,6 +66,27 @@ Homebrew prefixes are therefore checked directly, and `/opt/homebrew/bin` and
 Without that the pipeline fails to find `yt-dlp` and reports it as an extractor
 error, several layers from the cause.
 
+## The first launch
+
+A Mac that has never run this app gets one profile, **Default**, written to
+`~/Library/Application Support/ytdl-macos/profiles.json` before the window
+opens. It carries the app's own defaults — every option unset — so selecting it
+is "put the form back", not a preset that decides anything. That is deliberate:
+quality, codec and container policy lives in `run_ytdlp.ps1`, on the far side of
+the `CLI_VERSION` pin, and a profile shipped here that disagreed with it would
+be a second opinion this window has no business having.
+
+Nothing is *selected* on that first launch. The profile is somewhere to go back
+to, not something applied to a form you have not touched yet.
+
+It is an ordinary profile otherwise — rename it, save over it, delete it. **A
+delete sticks.** The seed is keyed on `profiles.json` being absent rather than
+on the list being empty, so once the file exists the default never comes back;
+a profile you cannot get rid of would be worse than no profile at all. For the
+same reason a `profiles.json` that exists but does not parse is left exactly as
+it is: an unreadable store is still somebody's profiles, and replacing it with a
+default is the one recovery nobody can undo.
+
 ## The panes
 
 | Pane | What it does |
@@ -74,7 +95,7 @@ error, several layers from the cause.
 | Downloads | the option form, the command preview, queue, live progress, history, pause, cancel |
 | Health | dependency probe, installed files, config, archive stats, log tails |
 | Video detail | player, streams, metadata, comments, transcript, files, checksum verify |
-| Profiles | named option sets, saved and restored |
+| Profiles | named option sets, saved and restored; a fresh install starts with **Default** |
 
 Nothing the GTK app does is missing.
 

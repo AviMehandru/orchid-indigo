@@ -198,6 +198,77 @@ final class ProfileTests: XCTestCase {
         XCTAssertNil(store.profile(named: "anything"))
     }
 
+    // MARK: - The default profile a fresh install starts with
+
+    func testFirstRunInstallsTheDefaultProfile() {
+        XCTAssertTrue(ProfileStore.seedDefaultIfMissing())
+
+        let store = ProfileStore.load()
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles[0].name, defaultProfileName)
+        XCTAssertGreaterThan(store.profiles[0].saved, 0)
+
+        /* Nothing is SELECTED. The seeded profile is somewhere to go back to,
+         * not a preset silently applied to a form the user has not touched
+         * yet. */
+        XCTAssertNil(store.active)
+    }
+
+    func testTheDefaultProfileSetsNothing() throws {
+        /* It carries the app's own defaults, so applying it produces exactly
+         * the command line a fresh form produces. A shipped profile that picked
+         * a quality or a container would be this window deciding pipeline
+         * policy, which is run_ytdlp.ps1's job on the far side of the
+         * CLI_VERSION pin. */
+        XCTAssertTrue(ProfileStore.seedDefaultIfMissing())
+
+        let store = ProfileStore.load()
+        let p = try XCTUnwrap(store.profile(named: defaultProfileName))
+
+        let url = "https://example.com/watch?v=aaaaaaaaaaa"
+        var fromProfile = p.opts
+        fromProfile.url = url
+        var fresh = RunOptions()
+        fresh.url = url
+
+        XCTAssertEqual(fromProfile.commandPreview(), fresh.commandPreview())
+    }
+
+    func testTheDefaultIsSeededOnceAndStaysDeleted() throws {
+        XCTAssertTrue(ProfileStore.seedDefaultIfMissing())
+        try ProfileStore.load().delete(name: defaultProfileName)
+
+        /* profiles.json still exists -- now holding an empty list -- so this is
+         * no longer a fresh install. A default that came back at every launch
+         * would be a profile the user cannot get rid of. */
+        XCTAssertFalse(ProfileStore.seedDefaultIfMissing())
+        XCTAssertTrue(ProfileStore.load().profiles.isEmpty)
+    }
+
+    func testSeedingNeverTouchesAnExistingStore() throws {
+        let store = ProfileStore.load()
+        try store.save(name: "Mine", opts: sampleOptions())
+
+        XCTAssertFalse(ProfileStore.seedDefaultIfMissing())
+
+        let again = ProfileStore.load()
+        XCTAssertEqual(again.profiles.count, 1)
+        XCTAssertNotNil(again.profile(named: "Mine"))
+        XCTAssertNil(again.profile(named: defaultProfileName))
+    }
+
+    func testACorruptStoreIsNotReplacedByTheDefault() throws {
+        /* This is why the check is "is there a file" rather than "did it
+         * parse". An unreadable profiles.json is still somebody's profiles --
+         * half-written by a crash, mangled by an editor mid-save -- and
+         * overwriting it with a default is the one recovery nobody can undo. */
+        let path = Paths.join(Paths.stateDir(), "profiles.json")
+        try FixtureSupport.write("{ not json", to: path)
+
+        XCTAssertFalse(ProfileStore.seedDefaultIfMissing())
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "{ not json")
+    }
+
     // MARK: - Settings and the atomic write beneath all of it
 
     func testSettingsRoundTripToApplicationSupport() {

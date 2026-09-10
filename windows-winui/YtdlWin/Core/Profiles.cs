@@ -41,6 +41,18 @@ public sealed class ProfileStore
     public const int MaxNameLength = 60;
     public const int MaxCount = 100;
 
+    /* The one profile a fresh install starts with.
+     *
+     * It carries the app's OWN defaults -- every field unset -- rather than an
+     * opinionated preset. That makes it the "put the form back" entry rather
+     * than a second place this window decides what a download should look like:
+     * quality, codec and container policy lives in run_ytdlp.ps1, on the far
+     * side of the CLI_VERSION pin, and a shipped profile disagreeing with it
+     * would be exactly the second opinion this app does not have.
+     *
+     * Ordinary in every other respect -- deletable, renameable, overwritable. */
+    public const string DefaultName = "Default";
+
     /// The profile selected when the window last closed, restored at startup.
     /// null means "no profile", which is a real state -- it is what the window
     /// is in before anything has been saved.
@@ -85,6 +97,44 @@ public sealed class ProfileStore
          * left pointing at nothing. */
         if (store.Active is not null && store.Position(store.Active) < 0) store.Active = null;
         return store;
+    }
+
+    /* Keyed on the ABSENCE OF profiles.json, not on the store being empty.
+     * Deleting the default leaves a file behind holding an empty list, so it
+     * stays deleted rather than reappearing at the next launch -- a profile
+     * that cannot be got rid of is worse than no profile at all. A file that
+     * exists but does not parse is left alone for a harder reason: an
+     * unreadable store is still somebody's profiles, and replacing it with a
+     * default is the one recovery nobody can undo.
+     *
+     * Deliberately NOT part of Load. A reader that writes would seed from any
+     * code path that happens to read the store, which is how "I deleted it and
+     * it came back" is built. Called once, from AppModel's constructor. */
+
+    /// Install DefaultName, once, on a machine that has never run this app.
+    /// Nothing is selected: the seeded profile is somewhere to go back to, not
+    /// a preset applied to a form the user has not touched yet. Returns true
+    /// when a profile was written. Best-effort -- a failure here is not worth
+    /// refusing to launch over, and the next launch tries again.
+    public static bool SeedDefaultIfMissing()
+    {
+        /* Paths.IsRegularFile rather than "did it parse": see above. A
+         * profiles.json that exists is never overwritten here, even when
+         * nothing in it can be read. */
+        if (Paths.IsRegularFile(Path())) return false;
+
+        var store = new ProfileStore();
+        /* The app's own defaults, not a preset. Every field unset, which is
+         * what makes selecting it equivalent to a form nobody has touched. */
+        store.Profiles.Add(new Profile
+        {
+            Name = DefaultName, Opts = new RunOptions(), Saved = Format.NowUnix(),
+        });
+
+        // store.Active stays null.
+        try { store.Write(); }
+        catch (ProfileException) { return false; }
+        return true;
     }
 
     // MARK: - Lookup

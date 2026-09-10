@@ -29,6 +29,7 @@
 #include "library_view.h"
 #include "paths.h"
 #include "pipeline.h"
+#include "profiles.h"
 #include "settings.h"
 #include "style.h"
 
@@ -542,6 +543,12 @@ main (int argc, char **argv)
 
   App app = { 0 };
   app.settings = ytdl_settings_load ();
+
+  /* Before any window exists, because the Downloads pane loads the profile
+   * store while it is being built and a fresh install has to have its default
+   * on disk by then. Does nothing on every launch after the first. */
+  ytdl_profiles_seed_default ();
+
   app.runner = ytdl_runner_new ();
   app.archive_root = archive_root != NULL
                          ? ytdl_resolve_archive_root (archive_root)

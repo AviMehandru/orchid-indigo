@@ -100,6 +100,82 @@ public sealed class ProfileTests : IDisposable
                      ProfileStore.Load().Profiles.Select(p => p.Name).ToArray());
     }
 
+    // MARK: - The default profile a fresh install starts with
+
+    [Fact]
+    public void FirstRunInstallsTheDefaultProfile()
+    {
+        Assert.True(ProfileStore.SeedDefaultIfMissing());
+
+        var store = ProfileStore.Load();
+        var p = Assert.Single(store.Profiles);
+        Assert.Equal(ProfileStore.DefaultName, p.Name);
+        Assert.True(p.Saved > 0);
+
+        /* Nothing is SELECTED. The seeded profile is somewhere to go back to,
+         * not a preset silently applied to a form the user has not touched
+         * yet. */
+        Assert.Null(store.Active);
+    }
+
+    /* It carries the app's own defaults, so applying it produces exactly the
+     * command line a fresh form produces. A shipped profile that picked a
+     * quality or a container would be this window deciding pipeline policy,
+     * which is run_ytdlp.ps1's job on the far side of the CLI_VERSION pin. */
+    [Fact]
+    public void TheDefaultProfileSetsNothing()
+    {
+        Assert.True(ProfileStore.SeedDefaultIfMissing());
+        var p = ProfileStore.Load().Get(ProfileStore.DefaultName)!;
+
+        const string url = "https://example.com/watch?v=aaaaaaaaaaa";
+        var fromProfile = p.Opts.Clone();
+        fromProfile.Url = url;
+        var fresh = new RunOptions { Url = url };
+
+        Assert.Equal(fresh.CommandPreview(), fromProfile.CommandPreview());
+    }
+
+    /* profiles.json still exists after a delete -- now holding an empty list --
+     * so that is no longer a fresh install. A default that came back at every
+     * launch would be a profile the user cannot get rid of. */
+    [Fact]
+    public void TheDefaultIsSeededOnceAndStaysDeleted()
+    {
+        Assert.True(ProfileStore.SeedDefaultIfMissing());
+        ProfileStore.Load().Delete(ProfileStore.DefaultName);
+
+        Assert.False(ProfileStore.SeedDefaultIfMissing());
+        Assert.Empty(ProfileStore.Load().Profiles);
+    }
+
+    [Fact]
+    public void SeedingNeverTouchesAnExistingStore()
+    {
+        var store = ProfileStore.Load();
+        store.Save("Mine", SampleOptions());
+
+        Assert.False(ProfileStore.SeedDefaultIfMissing());
+
+        var again = ProfileStore.Load();
+        Assert.Equal("Mine", Assert.Single(again.Profiles).Name);
+        Assert.Null(again.Get(ProfileStore.DefaultName));
+    }
+
+    /* This is why the check is "is there a file" rather than "did it parse". An
+     * unreadable profiles.json is still somebody's profiles -- half-written by
+     * a crash, mangled by an editor mid-save -- and overwriting it with a
+     * default is the one recovery nobody can undo. */
+    [Fact]
+    public void ACorruptStoreIsNotReplacedByTheDefault()
+    {
+        var path = Paths.Join(Paths.StateDir(), "profiles.json");
+        FixtureSupport.Write("{ not json", path);
+
+        Assert.False(ProfileStore.SeedDefaultIfMissing());
+        Assert.Equal("{ not json", File.ReadAllText(path));
+    }
+
     // MARK: - Names
 
     /* Case-insensitive, so "Archival" and "archival" are one profile rather

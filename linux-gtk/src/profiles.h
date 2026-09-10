@@ -33,6 +33,18 @@ G_BEGIN_DECLS
 #define YTDL_PROFILE_MAX_NAME 60
 #define YTDL_PROFILE_MAX      100
 
+/* The one profile a fresh install starts with.
+ *
+ * It carries the app's OWN defaults -- every field unset -- rather than an
+ * opinionated preset. That makes it the "put the form back" entry rather than a
+ * second place this window decides what a download should look like: quality,
+ * codec and container policy lives in run_ytdlp.ps1, on the far side of the
+ * CLI_VERSION pin, and a shipped profile disagreeing with it would be exactly
+ * the second opinion this app does not have.
+ *
+ * Ordinary in every other respect -- deletable, renameable, overwritable. */
+#define YTDL_PROFILE_DEFAULT_NAME "Default"
+
 typedef struct
 {
   char           *name;
@@ -51,6 +63,26 @@ typedef struct
 
 YtdlProfileStore *ytdl_profiles_load (void);
 void              ytdl_profile_store_free (YtdlProfileStore *store);
+
+/* Install YTDL_PROFILE_DEFAULT_NAME, once, on a machine that has never run
+ * this app. Nothing is selected: the seeded profile is somewhere to go back
+ * to, not a preset applied to a form the user has not touched yet.
+ *
+ * Keyed on the ABSENCE OF profiles.json, not on the store being empty.
+ * Deleting the default leaves a file behind holding an empty list, so it stays
+ * deleted rather than reappearing at the next launch -- a profile that cannot
+ * be got rid of is worse than no profile at all. A file that exists but does
+ * not parse is left alone for a harder reason: an unreadable store is still
+ * somebody's profiles, and replacing it with a default is the one recovery
+ * nobody can undo.
+ *
+ * Deliberately NOT part of ytdl_profiles_load. A reader that writes would seed
+ * from any code path that happens to read the store, which is how "I deleted
+ * it and it came back" is built. Called once, from main.
+ *
+ * TRUE when a profile was written. Best-effort: a failure here is not worth
+ * refusing to start over, and the next launch tries again. */
+gboolean ytdl_profiles_seed_default (void);
 
 /* Case-insensitive, so "Archival" and "archival" are one profile rather than
  * two indistinguishable rows in a dropdown. NULL when there is no such name. */

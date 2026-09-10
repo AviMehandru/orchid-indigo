@@ -127,7 +127,7 @@ final class AppModel: ObservableObject {
     /* Owned here, not by the view: the panes are a switch, so DownloadsView is
      * destroyed and rebuilt on every sidebar change and anything held in its
      * @State goes with it. */
-    let profiles = ProfileStore.load()
+    let profiles: ProfileStore
     let downloads: DownloadsModel
 
     private(set) var archiveRoot: String?
@@ -145,6 +145,11 @@ final class AppModel: ObservableObject {
     init() {
         let loaded = Settings.load()
         settings = loaded
+        /* Before the store is read, because a fresh install has to have its
+         * default profile on disk by the time the Profiles menu is built.
+         * Does nothing on every launch after the first. */
+        ProfileStore.seedDefaultIfMissing()
+        profiles = ProfileStore.load()
         downloads = DownloadsModel(settings: loaded, store: profiles)
         archiveRoot = AppModel.resolveRoot(settings: loaded)
     }

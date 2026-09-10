@@ -51,6 +51,27 @@ That accepts anything reasonable: a data root, the `Youtube Videos` folder,
 `Complete Archive` itself, or a single channel folder. Same acceptance set as
 `archive-viewer.py --root`, so a path that works for one works for both.
 
+## The first launch
+
+A machine that has never run this app gets one profile, **Default**, written to
+`$XDG_CONFIG_HOME/ytdl-gtk/profiles.json` before the window opens. It carries
+the app's own defaults — every option unset — so selecting it is "put the form
+back", not a preset that decides anything. That is deliberate: quality, codec
+and container policy lives in `run_ytdlp.ps1`, on the far side of the
+`CLI_VERSION` pin, and a profile shipped here that disagreed with it would be a
+second opinion this window has no business having.
+
+Nothing is *selected* on that first launch. The profile is somewhere to go back
+to, not something applied to a form you have not touched yet.
+
+It is an ordinary profile otherwise — rename it, save over it, delete it. **A
+delete sticks.** The seed is keyed on `profiles.json` being absent rather than
+on the list being empty, so once the file exists the default never comes back;
+a profile you cannot get rid of would be worse than no profile at all. For the
+same reason a `profiles.json` that exists but does not parse is left exactly as
+it is: an unreadable store is still somebody's profiles, and replacing it with a
+default is the one recovery nobody can undo.
+
 ## What works
 
 **Library** — archive discovery and indexing (layout 1 and 2), media-file
@@ -92,7 +113,8 @@ Without it the page says so and points you at mpv rather than showing a black
 rectangle. Stream details need `ffprobe`, which the pipeline already requires;
 without it that one section explains its absence and the rest still works.
 
-**Profiles** — a named set of options, saved and restored across restarts.
+**Profiles** — a named set of options, saved and restored across restarts. A
+fresh install starts with one, **Default**; see "The first launch" above.
 Selecting one applies its options and **leaves the URL alone**; the URL is
 never stored, on the way in or out, because a preset that replaced what you
 were about to download would be the one thing a preset must never do.

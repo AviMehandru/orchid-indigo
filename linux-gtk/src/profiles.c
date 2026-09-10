@@ -196,6 +196,31 @@ save_store (const YtdlProfileStore *store, GError **error)
   return TRUE;
 }
 
+gboolean
+ytdl_profiles_seed_default (void)
+{
+  /* g_file_test rather than "did it parse": see the comment on the
+   * declaration. A profiles.json that exists is never overwritten here, even
+   * when nothing in it can be read. */
+  g_autofree char *path = store_path ();
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    return FALSE;
+
+  g_autoptr (YtdlProfileStore) store = g_new0 (YtdlProfileStore, 1);
+  store->profiles = g_ptr_array_new_with_free_func (profile_free);
+
+  YtdlProfile *p = g_new0 (YtdlProfile, 1);
+  p->name = g_strdup (YTDL_PROFILE_DEFAULT_NAME);
+  /* The app's own defaults, not a preset. Every field unset, which is what
+   * makes selecting it equivalent to a form nobody has touched. */
+  p->opts = ytdl_run_options_new ();
+  p->saved = now_secs ();
+  g_ptr_array_add (store->profiles, p);
+
+  /* store->active stays NULL. */
+  return save_store (store, NULL);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Operations                                                             */
 /* ---------------------------------------------------------------------- */

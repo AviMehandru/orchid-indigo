@@ -302,6 +302,115 @@ test_missing_file_is_an_empty_store (Fixture *fx, gconstpointer unused)
   g_assert_null (ytdl_profiles_get (store, "anything"));
 }
 
+/* ---------------------------------------------------------------------- */
+/* The default profile a fresh install starts with                        */
+/* ---------------------------------------------------------------------- */
+
+static void
+test_first_run_installs_the_default_profile (Fixture *fx, gconstpointer unused)
+{
+  g_assert_true (ytdl_profiles_seed_default ());
+
+  g_autoptr (YtdlProfileStore) store = ytdl_profiles_load ();
+  g_assert_cmpuint (store->profiles->len, ==, 1);
+
+  const YtdlProfile *p = g_ptr_array_index (store->profiles, 0);
+  g_assert_cmpstr (p->name, ==, YTDL_PROFILE_DEFAULT_NAME);
+  g_assert_cmpint (p->saved, >, 0);
+
+  /* Nothing is SELECTED. The seeded profile is somewhere to go back to, not a
+   * preset silently applied to a form the user has not touched yet. */
+  g_assert_null (store->active);
+}
+
+static void
+test_the_default_profile_sets_nothing (Fixture *fx, gconstpointer unused)
+{
+  /* It carries the app's own defaults, so applying it produces exactly the
+   * command line a fresh form produces. A shipped profile that picked a
+   * quality or a container would be this window deciding pipeline policy,
+   * which is run_ytdlp.ps1's job on the far side of the CLI_VERSION pin. */
+  g_assert_true (ytdl_profiles_seed_default ());
+
+  g_autoptr (YtdlProfileStore) store = ytdl_profiles_load ();
+  const YtdlProfile *p =
+      ytdl_profiles_get (store, YTDL_PROFILE_DEFAULT_NAME);
+  g_assert_nonnull (p);
+
+  g_autoptr (YtdlRunOptions) from_profile = ytdl_run_options_copy (p->opts);
+  from_profile->url = g_strdup ("https://example.com/watch?v=aaaaaaaaaaa");
+  g_autoptr (YtdlRunOptions) fresh = ytdl_run_options_new ();
+  fresh->url = g_strdup ("https://example.com/watch?v=aaaaaaaaaaa");
+
+  g_autofree char *seeded = ytdl_run_options_command_preview (from_profile);
+  g_autofree char *plain = ytdl_run_options_command_preview (fresh);
+  g_assert_cmpstr (seeded, ==, plain);
+}
+
+static void
+test_the_default_is_seeded_once_and_stays_deleted (Fixture *fx,
+                                                   gconstpointer unused)
+{
+  GError *error = NULL;
+  g_assert_true (ytdl_profiles_seed_default ());
+
+  {
+    g_autoptr (YtdlProfileStore) store = ytdl_profiles_load ();
+    g_assert_true (
+        ytdl_profiles_delete (store, YTDL_PROFILE_DEFAULT_NAME, &error));
+    g_assert_no_error (error);
+  }
+
+  /* profiles.json still exists -- now holding an empty list -- so this is no
+   * longer a fresh install. A default that came back at every launch would be
+   * a profile the user cannot get rid of. */
+  g_assert_false (ytdl_profiles_seed_default ());
+
+  g_autoptr (YtdlProfileStore) again = ytdl_profiles_load ();
+  g_assert_cmpuint (again->profiles->len, ==, 0);
+}
+
+static void
+test_seeding_never_touches_an_existing_store (Fixture *fx,
+                                              gconstpointer unused)
+{
+  g_autoptr (YtdlRunOptions) o = sample_options ();
+  GError *error = NULL;
+
+  {
+    g_autoptr (YtdlProfileStore) store = ytdl_profiles_load ();
+    g_assert_true (ytdl_profiles_save (store, "Mine", o, &error));
+    g_assert_no_error (error);
+  }
+
+  g_assert_false (ytdl_profiles_seed_default ());
+
+  g_autoptr (YtdlProfileStore) again = ytdl_profiles_load ();
+  g_assert_cmpuint (again->profiles->len, ==, 1);
+  g_assert_nonnull (ytdl_profiles_get (again, "Mine"));
+  g_assert_null (ytdl_profiles_get (again, YTDL_PROFILE_DEFAULT_NAME));
+}
+
+static void
+test_a_corrupt_store_is_not_replaced_by_the_default (Fixture *fx,
+                                                     gconstpointer unused)
+{
+  /* This is why the check is "is there a file" rather than "did it parse". An
+   * unreadable profiles.json is still somebody's profiles -- half-written by a
+   * crash, mangled by an editor mid-save -- and overwriting it with a default
+   * is the one recovery nobody can undo. */
+  g_autofree char *dir = g_build_filename (fx->dir, "ytdl-gtk", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (dir, 0755), ==, 0);
+  g_autofree char *path = g_build_filename (dir, "profiles.json", NULL);
+  g_assert_true (g_file_set_contents (path, "{ not json", -1, NULL));
+
+  g_assert_false (ytdl_profiles_seed_default ());
+
+  g_autofree char *after = NULL;
+  g_assert_true (g_file_get_contents (path, &after, NULL, NULL));
+  g_assert_cmpstr (after, ==, "{ not json");
+}
+
 void
 ytdl_register_profile_tests (void)
 {
@@ -320,5 +429,14 @@ ytdl_register_profile_tests (void)
   FIX ("/profiles/hand-written-url-dropped",
        test_hand_written_url_is_dropped_on_load);
   FIX ("/profiles/missing-file", test_missing_file_is_an_empty_store);
+  FIX ("/profiles/default-seeded-on-first-run",
+       test_first_run_installs_the_default_profile);
+  FIX ("/profiles/default-sets-nothing", test_the_default_profile_sets_nothing);
+  FIX ("/profiles/default-stays-deleted",
+       test_the_default_is_seeded_once_and_stays_deleted);
+  FIX ("/profiles/seed-leaves-existing-store-alone",
+       test_seeding_never_touches_an_existing_store);
+  FIX ("/profiles/seed-leaves-corrupt-store-alone",
+       test_a_corrupt_store_is_not_replaced_by_the_default);
 #undef FIX
 }
