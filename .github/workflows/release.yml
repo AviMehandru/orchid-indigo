@@ -1,0 +1,542 @@
+# Build every distribution of every app in this repository.
+#
+# Five artifacts from four runners, in parallel, with no VM on anybody's
+# laptop:
+#
+#   linux-gtk       .deb for amd64          ubuntu-24.04
+#   linux-gtk       .deb for arm64          ubuntu-24.04-arm
+#   macos-swiftui   universal .app/.dmg     macos-26 (Apple silicon)
+#   windows-winui   win-x64 zip             windows-2025
+#   windows-winui   win-arm64 zip           windows-11-arm
+#
+# WHY UBUNTU 24.04 AND NOT 26.04. glibc is forward-compatible and not
+# backward-compatible: a binary linked on 24.04 (glibc 2.39) runs on 26.04,
+# and one linked on 26.04 (glibc 2.43) does not run on 24.04 at all. The
+# oldest distro this app supports is therefore the only correct host to build
+# the shipped package on. 24.04 is also exactly the floor the code targets --
+# meson.build picks libadwaita >= 1.5 because that is what 24.04 ships.
+#
+# WHY THE WINDOWS ARM64 BUILD GETS ITS OWN RUNNER. `dotnet publish -r
+# win-arm64` from an x64 host produces a correct binary (nothing here uses
+# Native AOT), so one runner could emit both. It does not get to RUN either
+# one. The P/Invoke in Core/ProcessTree.cs does job-object struct layouts and
+# QueryInformationJobObject buffer arithmetic by hand, which is the category
+# of code that is either right on every architecture or crashes on one, so
+# each RID is built and tested on its own silicon.
+#
+# WHY THE RELEASE IS A DRAFT. Nothing here publishes itself. The release job
+# creates a draft with the artifacts attached; publishing is a human deciding
+# the artifacts are good, which for a repo where one of the three apps has
+# never been compiled is not a decision to automate.
+#
+# ---------------------------------------------------------------------------
+# SECRETS. All optional. Every one that is absent degrades to an unsigned
+# build rather than a failed one, so this workflow is useful before any
+# account exists to sign with.
+#
+#   MACOS_CERT_P12          base64 of a Developer ID Application .p12
+#   MACOS_CERT_PASSWORD     its export password
+#   MACOS_TEAM_ID           10-character Apple team identifier
+#   MACOS_NOTARY_APPLE_ID   Apple ID for notarytool
+#   MACOS_NOTARY_PASSWORD   app-specific password from appleid.apple.com
+#                           (NOT the Apple ID password)
+#
+# Windows Authenticode is deliberately not wired up here. Azure Trusted
+# Signing is the sane route now that individual OV certificates need hardware
+# tokens, and it wants an Azure identity rather than a secret blob -- worth
+# doing as its own change once there is something to sign.
+# ---------------------------------------------------------------------------
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# A second push to the same tag supersedes the first rather than racing it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Every job derives the artifact version from this. A tag push gives
+  # v0.1.0 -> 0.1.0; a manual run gives 0.0.0-<sha7>, which is deliberately
+  # not a version anybody could mistake for a release.
+  FALLBACK_VERSION: 0.0.0
+
+jobs:
+  # ==========================================================================
+  # Linux -- GTK4 + libadwaita, C, meson
+  # ==========================================================================
+  linux:
+    name: linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+        # The full repository, not linux-gtk/. meson.build bakes
+        # meson.project_source_root()/../CLI_VERSION into the test binary at
+        # compile time, so a checkout that does not include the repo root
+        # fails at the test-compile step with a missing-file error several
+        # layers from the cause.
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${FALLBACK_VERSION}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config \
+            libgtk-4-dev libadwaita-1-dev libjson-glib-dev
+
+      - name: Record toolchain versions
+        # -Werror is on (meson.build sets werror=true), so which compiler ran
+        # is the first thing you want from a failing log.
+        run: |
+          gcc --version | head -1
+          meson --version
+          pkg-config --modversion gtk4 libadwaita-1 json-glib-1.0
+
+      - name: Configure
+        working-directory: linux-gtk
+        run: meson setup build --buildtype=release --prefix=/usr
+
+      - name: Compile
+        working-directory: linux-gtk
+        run: meson compile -C build
+
+      - name: Conformance suite
+        working-directory: linux-gtk
+        # This is the step that means something: tests/test_archive.c builds a
+        # fixture tree in the shape docs/archive-layout.md documents and
+        # asserts this reader finds it, including REQUIRES_ARCHIVE_LAYOUT from
+        # the repo-root CLI_VERSION against YTDL_SUPPORTED_ARCHIVE_LAYOUT in
+        # src/archive.h. A failure here means the pipeline's layout moved.
+        run: meson test -C build --print-errorlogs
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-${{ matrix.arch }}
+          path: linux-gtk/build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+      - name: Stage install tree
+        working-directory: linux-gtk
+        run: DESTDIR="${PWD}/pkgroot" meson install -C build
+
+      - name: Build .deb
+        working-directory: linux-gtk
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        # NOTE: meson.build currently installs the executable and nothing
+        # else -- no .desktop entry, no icon, no AppStream metainfo -- so this
+        # package puts a binary on PATH with no launcher in the applications
+        # menu. Adding linux-gtk/data/ and installing it from meson.build is
+        # the fix; this file should not grow its own copy of that, because
+        # packaging logic that lives only in CI is how the local build and the
+        # shipped build drift apart.
+        #
+        # Depends lists the runtime libraries, not the -dev packages. It does
+        # NOT list pwsh, yt-dlp or ffmpeg: those are the pipeline's
+        # dependencies, the Health pane probes for them and says what is
+        # missing, and a hard dependency here would make the package
+        # uninstallable on a machine where the pipeline arrived some other way.
+        run: |
+          mkdir -p pkgroot/DEBIAN
+          cat > pkgroot/DEBIAN/control <<EOF
+          Package: ytdl-gtk
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: ${ARCH}
+          Depends: libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), libjson-glib-1.0-0 (>= 1.6), libglib2.0-0 (>= 2.74)
+          Recommends: libgtk-4-media-gstreamer, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
+          Maintainer: Avi Mehandru <132959496+AviMehandru@users.noreply.github.com>
+          Description: GNOME front end for the yt-dlp archival pipeline
+           Browse a yt-dlp archive, start downloads through the installed
+           pipeline, and check the health of the tools underneath.
+          EOF
+          dpkg-deb --build --root-owner-group pkgroot \
+            "ytdl-gtk_${VERSION}_${ARCH}.deb"
+          dpkg-deb --info "ytdl-gtk_${VERSION}_${ARCH}.deb"
+          dpkg-deb --contents "ytdl-gtk_${VERSION}_${ARCH}.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: linux-gtk/*.deb
+          if-no-files-found: error
+
+  # ==========================================================================
+  # macOS -- SwiftUI, Xcode
+  #
+  # This is the one app in the repository that has never been through a Swift
+  # compiler. Expect the first run of this job to fail with real compile
+  # errors rather than with a CI misconfiguration.
+  # ==========================================================================
+  macos:
+    name: macos universal
+    runs-on: macos-26
+    env:
+      # `secrets` is not usable in a job-level `if`, but it is usable here,
+      # and a step-level `if` can read it back. This is the switch between the
+      # signed and unsigned paths below.
+      SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${FALLBACK_VERSION}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Record toolchain version
+        run: xcodebuild -version
+
+      - name: Test
+        working-directory: macos-swiftui
+        # Manual/ad-hoc signing explicitly: CODE_SIGN_STYLE is Automatic in the
+        # generated project, and automatic signing on a runner with no team
+        # fails at provisioning rather than at compile, which reads as a
+        # mysterious failure in a log full of Swift.
+        run: |
+          xcodebuild test \
+            -project YtdlMac.xcodeproj \
+            -scheme ytdl-macos \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/dd \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO
+
+      # ---- unsigned path ----------------------------------------------------
+      - name: Build (unsigned)
+        if: env.SIGNING != 'true'
+        working-directory: macos-swiftui
+        run: |
+          xcodebuild build \
+            -project YtdlMac.xcodeproj \
+            -scheme ytdl-macos \
+            -configuration Release \
+            -derivedDataPath build/dd \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO
+          mkdir -p build/export
+          cp -R build/dd/Build/Products/Release/ytdl-macos.app build/export/
+
+      # ---- signed path ------------------------------------------------------
+      - name: Import signing certificate
+        if: env.SIGNING == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        # A throwaway keychain rather than the login one. The runner is
+        # destroyed afterwards, but a build that leaves a cert in a shared
+        # keychain is a habit worth not forming.
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Archive and export (signed)
+        if: env.SIGNING == 'true'
+        working-directory: macos-swiftui
+        env:
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          xcodebuild archive \
+            -project YtdlMac.xcodeproj \
+            -scheme ytdl-macos \
+            -configuration Release \
+            -archivePath build/ytdl-macos.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$TEAM_ID"
+          cat > build/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>developer-id</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath build/ytdl-macos.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export
+
+      # ---- both paths -------------------------------------------------------
+      - name: Assert the binary is universal
+        working-directory: macos-swiftui
+        # ARCHS_STANDARD for a macOS target is arm64 x86_64 only while the
+        # deployment target stays below 27.0 -- at 27.0 it silently drops
+        # x86_64 with no error and no warning. DEPLOYMENT_TARGET is 14.0 in
+        # Tools/generate-xcodeproj.py today, so this check passes; it exists so
+        # that raising it later breaks the build here instead of shipping an
+        # arm64-only binary to Intel users.
+        run: |
+          BIN=build/export/ytdl-macos.app/Contents/MacOS/ytdl-macos
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "architectures: $ARCHS"
+          case "$ARCHS" in
+            *arm64*) ;;
+            *) echo "::error::missing arm64 slice"; exit 1 ;;
+          esac
+          case "$ARCHS" in
+            *x86_64*) ;;
+            *) echo "::error::missing x86_64 slice -- check ARCHS/ARCHS_STANDARD and the deployment target"; exit 1 ;;
+          esac
+
+      - name: Notarize and staple
+        if: env.SIGNING == 'true'
+        working-directory: macos-swiftui
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        # `notarytool submit --wait` exits non-zero on rejection, but its
+        # summary rarely says why -- the log fetch is what names the actual
+        # entitlement or hardened-runtime problem, so it runs unconditionally.
+        run: |
+          ditto -c -k --keepParent build/export/ytdl-macos.app build/notarize.zip
+          set +e
+          xcrun notarytool submit build/notarize.zip \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+            --password "$NOTARY_PASSWORD" --wait --output-format json \
+            > build/notary.json
+          STATUS=$?
+          set -e
+          cat build/notary.json
+          SUBMISSION="$(plutil -extract id raw -o - build/notary.json || true)"
+          if [ -n "$SUBMISSION" ]; then
+            xcrun notarytool log "$SUBMISSION" \
+              --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+              --password "$NOTARY_PASSWORD" || true
+          fi
+          [ "$STATUS" -eq 0 ] || exit "$STATUS"
+          xcrun stapler staple build/export/ytdl-macos.app
+          spctl -a -vvv -t install build/export/ytdl-macos.app
+
+      - name: Package
+        working-directory: macos-swiftui
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        # hdiutil rather than create-dmg: no Homebrew install on the critical
+        # path, and the drop-target prettiness is not worth a dependency. The
+        # .dmg is signed and notarized in its own right on the signed path,
+        # because a notarized app inside an unnotarized image still arrives
+        # quarantined.
+        run: |
+          mkdir -p dist
+          hdiutil create -quiet -srcfolder build/export \
+            -volname "ytdl-macos" -fs HFS+ \
+            "dist/ytdl-macos-${VERSION}-universal.dmg"
+
+      - name: Sign and notarize the disk image
+        if: env.SIGNING == 'true'
+        working-directory: macos-swiftui
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          DMG="dist/ytdl-macos-${VERSION}-universal.dmg"
+          codesign --sign "Developer ID Application" --timestamp "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+            --password "$NOTARY_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Note that this build is unsigned
+        if: env.SIGNING != 'true'
+        run: |
+          echo "::warning::No MACOS_CERT_P12 secret -- this .dmg is ad-hoc signed. \
+          A user who downloads it will be told the app is damaged, and will need \
+          xattr -dr com.apple.quarantine on it."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: macos-swiftui/dist/*.dmg
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Windows -- WinUI 3, C#, .NET
+  # ==========================================================================
+  windows:
+    name: windows ${{ matrix.rid }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: windows-2025
+          - rid: win-arm64
+            runner: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: v
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${FALLBACK_VERSION}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        # 10 because .NET 8 leaves support on 10 November 2026 and the SDK you
+        # build with should already be the one you will still have. 8 as well
+        # because YtdlWin.csproj still targets net8.0-windows10.0.19041.0 and
+        # the test host needs that runtime to execute. When TargetFramework is
+        # bumped to net10.0-windows, delete the 8.0.x line -- and do that as
+        # its own change, not alongside anything else.
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Record toolchain versions
+        run: dotnet --info
+
+      - name: Test
+        working-directory: windows-winui
+        # YtdlWin.Tests compiles ..\YtdlWin\Core\*.cs from source rather than
+        # referencing the app, so this needs no XAML compiler and no Windows
+        # App SDK -- it passes even on a machine where the app itself will not
+        # build. That is why it runs before the build and not after.
+        run: dotnet test YtdlWin.Tests\YtdlWin.Tests.csproj -c Release --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-testresults-${{ matrix.rid }}
+          path: windows-winui/**/TestResults/*.trx
+          if-no-files-found: ignore
+
+      - name: Publish
+        working-directory: windows-winui
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        # SelfContained and WindowsAppSDKSelfContained are both true in the
+        # csproj, so this output folder IS the redistributable: no .NET runtime
+        # and no Windows App Runtime install on the target machine.
+        run: >
+          dotnet publish YtdlWin\YtdlWin.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:Version=$env:VERSION
+          -o publish\${{ matrix.rid }}
+
+      - name: Smoke test the published binary
+        working-directory: windows-winui
+        # Not a functional test -- a GUI process with no console cannot be
+        # meaningfully driven from here. This asserts only that the thing
+        # loads: that the self-contained layout is complete and the Windows App
+        # SDK bits resolved. A publish that is missing a runtime file fails
+        # here rather than in somebody's download.
+        run: |
+          $exe = "publish\${{ matrix.rid }}\YtdlWin.exe"
+          if (-not (Test-Path $exe)) { throw "no YtdlWin.exe in the publish output" }
+          if (-not (Test-Path "publish\${{ matrix.rid }}\CLI_VERSION")) {
+            throw "CLI_VERSION was not copied next to the binary -- the Health pane and the conformance suite both read it from there"
+          }
+          Get-Item $exe | Format-List Name, Length, VersionInfo
+
+      - name: Package
+        working-directory: windows-winui
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "publish\${{ matrix.rid }}\*" `
+            -DestinationPath "dist\ytdl-win-$env:VERSION-${{ matrix.rid }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.rid }}
+          path: windows-winui/dist/*.zip
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Collect everything into one draft release
+  # ==========================================================================
+  release:
+    name: draft release
+    needs: [linux, macos, windows]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List what is about to be attached
+        run: ls -la dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --draft, deliberately. See the note at the top of this file: a human
+        # decides these artifacts are good. --verify-tag refuses to invent a
+        # release for a tag that is not actually on the remote.
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            dist/*
