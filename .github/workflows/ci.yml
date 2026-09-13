@@ -1,0 +1,230 @@
+# Run every conformance suite in this repository on every change.
+#
+# This is the workflow that catches the failure the whole CLI_VERSION
+# apparatus exists to prevent: the pipeline's archive layout moves, one app is
+# updated and another is not, and the first symptom is somebody's library
+# coming up empty with no error anywhere. release.yml only runs on a tag, by
+# which point the drift is already in main.
+#
+# Four jobs. The first is the interesting one.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'LICENSE']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ==========================================================================
+  # The cheap checks that catch the expensive mistakes.
+  #
+  # Runs in seconds on one Linux runner, needs no toolchain for any of the
+  # three apps, and covers the two kinds of drift that no compiler catches.
+  # ==========================================================================
+  contract:
+    name: contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Every app agrees on the archive layout version
+        # CLI_VERSION is one pin for all three apps, deliberately, and each app
+        # asserts it against its own constant in its own conformance suite.
+        # That is the real check -- but it only runs where that app's suite
+        # runs, and the macOS suite is the one that cannot be relied on to run
+        # at all yet, because the app does not compile. So a CLI_VERSION bump
+        # that forgets Archive.swift would currently pass every job in this
+        # file except this one.
+        #
+        # Four greps are a poor substitute for four test suites. They are a
+        # very good substitute for a test suite that never executes.
+        run: |
+          pin=$(grep -E '^REQUIRES_ARCHIVE_LAYOUT=' CLI_VERSION \
+                | cut -d= -f2 | tr -d '[:space:]')
+          gtk=$(grep -E '^#define YTDL_SUPPORTED_ARCHIVE_LAYOUT[[:space:]]' \
+                linux-gtk/src/archive.h | awk '{print $3}')
+          swift=$(grep -E '^let supportedArchiveLayout' \
+                  macos-swiftui/Sources/Core/Archive.swift \
+                  | sed 's/.*=[[:space:]]*//' | tr -d '[:space:]')
+          cs=$(grep -E 'public const long Supported[[:space:]]*=' \
+               windows-winui/YtdlWin/Core/Archive.cs \
+               | sed 's/.*=[[:space:]]*//; s/;.*//' | tr -d '[:space:]')
+
+          printf 'CLI_VERSION  REQUIRES_ARCHIVE_LAYOUT = %s\n' "$pin"
+          printf 'linux-gtk    YTDL_SUPPORTED_ARCHIVE_LAYOUT = %s\n' "$gtk"
+          printf 'macos        supportedArchiveLayout = %s\n' "$swift"
+          printf 'windows      ArchiveLayout.Supported = %s\n' "$cs"
+
+          fail=0
+          for v in "$pin" "$gtk" "$swift" "$cs"; do
+            case "$v" in
+              ''|*[!0-9]*) echo "::error::could not parse a layout version -- a constant was renamed or moved"; exit 1 ;;
+            esac
+          done
+          [ "$gtk"   = "$pin" ] || { echo "::error file=linux-gtk/src/archive.h::YTDL_SUPPORTED_ARCHIVE_LAYOUT ($gtk) does not match CLI_VERSION ($pin)"; fail=1; }
+          [ "$swift" = "$pin" ] || { echo "::error file=macos-swiftui/Sources/Core/Archive.swift::supportedArchiveLayout ($swift) does not match CLI_VERSION ($pin)"; fail=1; }
+          [ "$cs"    = "$pin" ] || { echo "::error file=windows-winui/YtdlWin/Core/Archive.cs::ArchiveLayout.Supported ($cs) does not match CLI_VERSION ($pin)"; fail=1; }
+          [ "$fail" -eq 0 ] || {
+            echo "::error::Raise CLI_VERSION only after EVERY app reads the newer layout. Raising it first gives you a green build that lies."
+            exit 1
+          }
+          echo "all four copies agree on layout $pin"
+
+      - name: The Xcode project file is in sync with the sources
+        # YtdlMac.xcodeproj is generated, not hand-edited, and identifiers are
+        # derived from file paths so regenerating is idempotent. The failure
+        # this guards against is silent by construction: add a .swift file,
+        # forget to regenerate, and the file is in the repository and not in
+        # the build -- no error on any platform, the app just behaves as though
+        # the code was never written.
+        #
+        # Runs here rather than on the macOS runner because the generator is
+        # stdlib-only Python and needs no Xcode at all.
+        run: |
+          cd macos-swiftui
+          python3 Tools/generate-xcodeproj.py
+          cd ..
+          if ! git diff --exit-code -- macos-swiftui/YtdlMac.xcodeproj; then
+            echo "::error file=macos-swiftui/YtdlMac.xcodeproj/project.pbxproj::project.pbxproj is out of date. Run python3 Tools/generate-xcodeproj.py and commit the result -- do not hand-edit it."
+            exit 1
+          fi
+          echo "project.pbxproj matches the sources on disk"
+
+  # ==========================================================================
+  # Linux -- the only app here that has ever actually been run.
+  #
+  # Both architectures, and that is not belt-and-braces: meson.build turns on
+  # -Wcast-align with -Werror, and -Wcast-align genuinely fires differently on
+  # arm64 than on x86-64 because the alignment requirements differ. An x86-only
+  # CI would let a cast that fails to build on arm64 through.
+  # ==========================================================================
+  linux:
+    name: linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+        # The whole repository: meson.build bakes ../CLI_VERSION into the test
+        # binary at compile time.
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config \
+            libgtk-4-dev libadwaita-1-dev libjson-glib-dev
+
+      - name: Record toolchain versions
+        run: |
+          gcc --version | head -1
+          pkg-config --modversion gtk4 libadwaita-1 json-glib-1.0
+
+      - name: Build and test
+        working-directory: linux-gtk
+        # --buildtype=debug, unlike release.yml. This job is looking for
+        # compile errors and failing assertions, and a debug build gets there
+        # faster and with better diagnostics.
+        run: |
+          meson setup build --buildtype=debug
+          meson compile -C build
+          meson test -C build --print-errorlogs
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-${{ matrix.arch }}
+          path: linux-gtk/build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  # ==========================================================================
+  # macOS -- this WILL be red until the app compiles for the first time, and
+  # that is the intended state rather than a problem to route around.
+  #
+  # There is no continue-on-error here on purpose. An advisory job is a job
+  # nobody has to keep green, and a suite nobody has to keep green is not a
+  # suite. Until the first clean build lands, the honest reading of this
+  # workflow is "one app does not compile yet", not "CI is broken" -- and the
+  # job log is the fastest way to see how far the compile gets.
+  # ==========================================================================
+  macos:
+    name: macos
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Record toolchain version
+        run: xcodebuild -version
+
+      - name: Test
+        working-directory: macos-swiftui
+        # Manual ad-hoc signing: CODE_SIGN_STYLE is Automatic in the generated
+        # project, and automatic signing on a runner with no team fails at
+        # provisioning rather than at compile.
+        run: |
+          xcodebuild test \
+            -project YtdlMac.xcodeproj \
+            -scheme ytdl-macos \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/dd \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO
+
+  # ==========================================================================
+  # Windows -- x64 only here; release.yml covers arm64.
+  #
+  # YtdlWin.Tests compiles ..\YtdlWin\Core\*.cs from source rather than
+  # referencing the app, so this needs no XAML compiler and no Windows App SDK.
+  # That is why this job is fast and why it does not build the app: the point
+  # of this file is the conformance suites, and release.yml is where the thing
+  # that ships gets built.
+  # ==========================================================================
+  windows:
+    name: windows
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        # 8.0.x because YtdlWin.Tests still targets net8.0-windows and the test
+        # host needs that runtime; 10.0.x because that is the SDK to be
+        # building with now that .NET 8 leaves support in November 2026. Drop
+        # the 8.0.x line when TargetFramework moves to net10.0-windows.
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Test
+        working-directory: windows-winui
+        run: dotnet test YtdlWin.Tests\YtdlWin.Tests.csproj -c Release --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-testresults
+          path: windows-winui/**/TestResults/*.trx
+          if-no-files-found: ignore
