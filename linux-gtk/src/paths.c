@@ -227,6 +227,23 @@ ytdl_autodetect_archive_root (void)
 }
 
 char *
+ytdl_choose_archive_root (const char *cli_override, const char *configured)
+{
+  if (cli_override != NULL && *cli_override != '\0')
+    return ytdl_resolve_archive_root (cli_override);
+
+  if (configured != NULL && *configured != '\0')
+    {
+      char *found = ytdl_resolve_archive_root (configured);
+      if (found != NULL)
+        return found;
+      /* Falls through on purpose. See the header. */
+    }
+
+  return ytdl_autodetect_archive_root ();
+}
+
+char *
 ytdl_key_for (const char *rel)
 {
   g_return_val_if_fail (rel != NULL, NULL);

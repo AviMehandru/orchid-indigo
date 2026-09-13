@@ -41,15 +41,27 @@ in a C codebase, so its output is not advisory.
 ## Running
 
 The archive is found the way the pipeline finds it — `$YTDLP_INSTALL_ROOT`,
-then `~/yt-dlp`, `~/Documents/yt-dlp`, `~`. To point it somewhere else:
+then `~/yt-dlp`, `~/Documents/yt-dlp`, `~`. To point it somewhere else, either
+use **Choose folder…** in the Archive section of the Health pane, which stores
+the choice in `settings.json` and rescans, or pass it for one launch:
 
 ```
 ./build/ytdl-gtk --archive-root /mnt/nas/yt-dlp
 ```
 
-That accepts anything reasonable: a data root, the `Youtube Videos` folder,
+Both accept anything reasonable: a data root, the `Youtube Videos` folder,
 `Complete Archive` itself, or a single channel folder. Same acceptance set as
 `archive-viewer.py --root`, so a path that works for one works for both.
+
+The precedence is `--archive-root`, then the stored root, then autodetection,
+and the two overrides deliberately behave differently when they do not
+resolve. A **stored** root that has stopped resolving falls back to
+autodetection — it is an unplugged disk or an unmounted share far more often
+than a decision, and this is what the macOS and Windows apps do with theirs. A
+**flag** that does not resolve does not fall back: someone who typed a path is
+naming one specific tree, and quietly scanning a different one because it was
+mistyped is worse than an empty window saying what was not found.
+`tests/test_paths.c` is that precedence.
 
 ## The first launch
 
@@ -81,12 +93,13 @@ selection, thumbnails, the grid, live search, threaded scanning with progress.
 `ytdl.ps1` exactly as a terminal would. Live command preview, the native
 folder chooser for the destination, a sequential queue that survives a
 restart, live progress parsed from yt-dlp's own output, run history with the
-four session-summary counts, pause, and a cancel that kills the whole process
-tree.
+four session-summary counts and a Clear that forgets them, pause, and a cancel
+that kills the whole process tree.
 
 **Health** — the seven dependencies probed in parallel with versions and an
 8-second ceiling each, which pipeline files are actually installed (not what
-is in a checkout), `CONFIG_VERSION`, archive counts, and the tail of
+is in a checkout), `CONFIG_VERSION`, archive counts, the archive root actually
+in effect and a folder chooser for changing it, and the tail of
 `download.log` / `archive.txt`.
 
 **Video detail** — activate a card in the Library to open it. An embedded

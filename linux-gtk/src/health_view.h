@@ -25,6 +25,11 @@ GtkWidget *ytdl_health_view_new (YtdlSettings *settings);
 /* Borrowed, and may be NULL. Pass NULL before freeing an index. */
 void ytdl_health_view_set_index (YtdlHealthView *self, YtdlIndex *index);
 
+/* The archive root actually in effect, as main.c resolved it, or NULL when
+ * nothing was found. Copied. This pane reports it; it never resolves one. */
+void ytdl_health_view_set_archive_root (YtdlHealthView *self,
+                                        const char     *root);
+
 /* Re-read everything cheap and re-probe the dependencies. @force skips the
  * five-minute probe cache. */
 void ytdl_health_view_refresh (YtdlHealthView *self, gboolean force);

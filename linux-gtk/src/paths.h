@@ -74,6 +74,24 @@ char *ytdl_resolve_archive_root(const char *candidate);
 /* The usual install locations, in order. NULL if none of them hold one. */
 char *ytdl_autodetect_archive_root(void);
 
+/* The one place the precedence between the three ways a root can be named
+ * lives: the command line, the stored setting, and autodetection. Both
+ * arguments may be NULL or empty.
+ *
+ * @cli_override is STRICT -- if it is given and does not resolve, the result
+ * is NULL rather than a fallback. Someone who typed a path on the command
+ * line is pointing at a specific tree, and quietly scanning a different one
+ * because that path was mistyped is worse than an empty window with a message
+ * naming what was not found.
+ *
+ * @configured is NOT strict: a stored root that stopped resolving is usually
+ * an unplugged disk or an unmounted share, not a decision, so it falls back to
+ * autodetection the way the macOS and Windows apps do. It is the whole reason
+ * this is one function -- the three apps agreeing on the ORDER but not on the
+ * fallback was the shape of the original bug. */
+char *ytdl_choose_archive_root(const char *cli_override,
+                               const char *configured);
+
 /* The opaque key a video folder is addressed by.
  *
  * The UI never holds a filesystem path: it holds one of these plus an index

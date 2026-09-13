@@ -39,6 +39,7 @@ struct _YtdlDownloadsView
   GtkWidget *history_box;
   GtkWidget *queue_title;
   GtkWidget *history_title;
+  GtkWidget *clear_history;
 
   /* Profiles */
   YtdlProfileStore *store;
@@ -364,6 +365,11 @@ on_state_changed (YtdlRunner *runner, gpointer user_data)
   gtk_label_set_text (GTK_LABEL (self->queue_title), qt);
   g_autofree char *ht = g_strdup_printf ("History (%u)", history->len);
   gtk_label_set_text (GTK_LABEL (self->history_title), ht);
+
+  /* Hidden rather than insensitive when there is nothing to clear: the list
+   * already says "no runs yet this session", and a greyed-out button beside
+   * that sentence is a second, weaker way of saying it. */
+  gtk_widget_set_visible (self->clear_history, history->len > 0);
 
   YtdlProgress p = { 0 };
   p.percent = -1.0;
@@ -747,6 +753,18 @@ on_pause_toggled (GtkToggleButton *btn, gpointer user_data)
   gtk_button_set_label (GTK_BUTTON (btn), paused ? "Resume queue" : "Pause queue");
 }
 
+/* No confirmation, deliberately. History is a record of what this session
+ * did, not an artefact -- the archive itself is untouched, and every run in
+ * the list has already written its own line to download.log. The runner
+ * emits state-changed, which is what empties the list and hides this button
+ * again. */
+static void
+on_clear_history (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  ytdl_runner_clear_history (self->runner);
+}
+
 static void
 on_folder_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
 {
@@ -866,14 +884,25 @@ make_list (const char *empty_text)
   return list;
 }
 
+/* @trailing, when given, sits at the right-hand end of the heading row --
+ * which is why the heading is a horizontal box rather than a bare label. The
+ * label still hexpands, so a section with no trailing widget lays out exactly
+ * as it did before. */
 static GtkWidget *
-section (const char *title, GtkWidget **title_label_out)
+section (const char *title, GtkWidget *trailing, GtkWidget **title_label_out)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+
+  GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   GtkWidget *l = gtk_label_new (title);
   gtk_label_set_xalign (GTK_LABEL (l), 0.0f);
+  gtk_widget_set_hexpand (l, TRUE);
   gtk_widget_add_css_class (l, "heading");
-  gtk_box_append (GTK_BOX (box), l);
+  gtk_box_append (GTK_BOX (head), l);
+  if (trailing != NULL)
+    gtk_box_append (GTK_BOX (head), trailing);
+  gtk_box_append (GTK_BOX (box), head);
+
   if (title_label_out != NULL)
     *title_label_out = l;
   return box;
@@ -1222,7 +1251,7 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
                                "Add to queue.");
   self->history_box = make_list ("No runs yet this session.");
 
-  GtkWidget *qsec = section ("Queue (0)", &self->queue_title);
+  GtkWidget *qsec = section ("Queue (0)", NULL, &self->queue_title);
   GtkWidget *qscroll = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (qscroll),
                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -1232,7 +1261,19 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   gtk_widget_set_size_request (qscroll, -1, 110);
   gtk_box_append (GTK_BOX (qsec), qscroll);
 
-  GtkWidget *hsec = section ("History (0)", &self->history_title);
+  self->clear_history = gtk_button_new_with_label ("Clear");
+  gtk_widget_add_css_class (self->clear_history, "flat");
+  gtk_widget_set_valign (self->clear_history, GTK_ALIGN_CENTER);
+  gtk_widget_set_visible (self->clear_history, FALSE);
+  gtk_widget_set_tooltip_text (
+      self->clear_history,
+      "Forgets this session's run records. The archive, download.log and "
+      "archive.txt are not touched.");
+  g_signal_connect (self->clear_history, "clicked",
+                    G_CALLBACK (on_clear_history), self);
+
+  GtkWidget *hsec =
+      section ("History (0)", self->clear_history, &self->history_title);
   GtkWidget *hscroll = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (hscroll),
                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);

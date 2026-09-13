@@ -239,11 +239,10 @@ start_scan (App *app)
     {
       const char *msg =
           "Could not find an archive. Looked for 'Youtube Videos/Complete "
-          "Archive' under the usual locations. Pass --archive-root, or set "
-          "YTDLP_INSTALL_ROOT.";
+          "Archive' under the usual locations. Choose a folder on the Health "
+          "pane, pass --archive-root, or set YTDLP_INSTALL_ROOT.";
       set_status (app, msg);
-      toast (app, "No archive found. Pass --archive-root or set "
-                  "YTDLP_INSTALL_ROOT.");
+      toast (app, "No archive found. Choose a folder on the Health pane.");
       return;
     }
 
@@ -260,6 +259,51 @@ start_scan (App *app)
 
   GThread *t = g_thread_new ("ytdl-scan", scan_thread, app);
   g_thread_unref (t);
+}
+
+/* The Health pane picked a folder.
+ *
+ * A pick that does NOT hold an archive is refused and nothing is stored --
+ * the opposite of the destination folder on the Downloads pane, which is a
+ * place to write and so cannot be wrong yet. This one names an existing tree,
+ * so "there is no Complete Archive under here" is knowable now, and storing
+ * it would turn one mistyped pick into a setting that quietly loses to
+ * autodetection on every later launch with nothing on screen explaining why.
+ *
+ * A scan already running is left alone rather than cancelled: it is about to
+ * swap in an index built for the OLD root, and on_scan_finished has no way to
+ * tell that it is stale. The rescan button is the recovery, and the status
+ * line already says a scan is in flight, so this is a visible wait rather
+ * than a silent one. */
+static void
+on_archive_root_chosen (YtdlHealthView *view, const char *path, gpointer data)
+{
+  App *app = data;
+
+  g_autofree char *resolved = ytdl_resolve_archive_root (path);
+  if (resolved == NULL)
+    {
+      toast (app, "No 'Complete Archive' under that folder.");
+      return;
+    }
+
+  g_free (app->settings->archive_root);
+  app->settings->archive_root = g_strdup (path);
+  ytdl_settings_save (app->settings);
+
+  g_free (app->archive_root);
+  app->archive_root = g_steal_pointer (&resolved);
+
+  ytdl_health_view_set_archive_root (YTDL_HEALTH_VIEW (app->health),
+                                     app->archive_root);
+
+  if (app->scanning)
+    {
+      toast (app, "Archive root saved. Rescan when this scan finishes.");
+      return;
+    }
+
+  start_scan (app);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -374,6 +418,10 @@ build_main_page (App *app)
                                        "folder-download-symbolic");
 
   app->health = ytdl_health_view_new (app->settings);
+  ytdl_health_view_set_archive_root (YTDL_HEALTH_VIEW (app->health),
+                                     app->archive_root);
+  g_signal_connect (app->health, "archive-root-chosen",
+                    G_CALLBACK (on_archive_root_chosen), app);
   adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
                                        app->health, "health", "Health",
                                        "applications-utilities-symbolic");
@@ -550,9 +598,14 @@ main (int argc, char **argv)
   ytdl_profiles_seed_default ();
 
   app.runner = ytdl_runner_new ();
-  app.archive_root = archive_root != NULL
-                         ? ytdl_resolve_archive_root (archive_root)
-                         : ytdl_autodetect_archive_root ();
+
+  /* --archive-root, then the root chosen on the Health pane, then the usual
+   * locations. The middle one used to be missing: settings.json carried an
+   * archive_root that nothing read and nothing could write, so a machine
+   * whose archive autodetection could not find had no answer but a flag on
+   * every launch. ytdl_choose_archive_root owns the precedence. */
+  app.archive_root =
+      ytdl_choose_archive_root (archive_root, app.settings->archive_root);
 
   if (archive_root != NULL && app.archive_root == NULL)
     g_printerr ("No 'Complete Archive' found under %s -- starting empty.\n",

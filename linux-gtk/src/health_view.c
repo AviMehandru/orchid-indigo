@@ -21,9 +21,20 @@ struct _YtdlHealthView
   GtkWidget *log_view;
   GtkWidget *log_choice;
   GtkWidget *refresh;
+  GtkWidget *choose_root;
+
+  char *archive_root; /* owned, may be NULL */
 
   gboolean probing;
 };
+
+enum
+{
+  SIG_ARCHIVE_ROOT_CHOSEN,
+  N_SIGNALS
+};
+
+static guint signals[N_SIGNALS];
 
 G_DEFINE_FINAL_TYPE (YtdlHealthView, ytdl_health_view, GTK_TYPE_BOX)
 
@@ -335,6 +346,19 @@ fill_stats (YtdlHealthView *self)
   gtk_list_box_append (GTK_LIST_BOX (self->stats_box),
                        kv_row ("Data root", s->data_root, TRUE));
 
+  /* Which tree the Library is actually reading. Without this the folder
+   * picker is unfalsifiable: a pick that resolved to nothing looks exactly
+   * like one that worked, because both leave the counts above unchanged when
+   * the archive was empty to begin with. Deliberately NOT labelled with where
+   * it came from -- this pane cannot tell the CLI flag from the stored
+   * setting without main.c telling it, and a guess here would be a confident
+   * wrong answer rather than a missing one. */
+  gtk_list_box_append (
+      GTK_LIST_BOX (self->stats_box),
+      kv_row ("Archive root",
+              self->archive_root != NULL ? self->archive_root : "none found",
+              TRUE));
+
   g_autofree char *gm =
       s->global_manifest_entries >= 0
           ? g_strdup_printf ("%" G_GSSIZE_FORMAT, s->global_manifest_entries)
@@ -425,6 +449,15 @@ ytdl_health_view_set_index (YtdlHealthView *self, YtdlIndex *index)
   fill_stats (self);
 }
 
+void
+ytdl_health_view_set_archive_root (YtdlHealthView *self, const char *root)
+{
+  g_return_if_fail (YTDL_IS_HEALTH_VIEW (self));
+  g_free (self->archive_root);
+  self->archive_root = g_strdup (root);
+  fill_stats (self);
+}
+
 static void
 on_refresh (GtkButton *btn, gpointer user_data)
 {
@@ -437,6 +470,54 @@ on_log_choice (GObject *obj, GParamSpec *pspec, gpointer user_data)
   fill_log (user_data);
 }
 
+/* This view does not resolve, store or rescan anything itself -- it reports
+ * the chosen folder and stops. Deciding whether the path is an archive, and
+ * throwing away the index if it is, belongs to whoever owns the index, which
+ * is main.c. A pane whose job is to describe the state of things is the wrong
+ * place to change it. */
+static void
+on_root_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  YtdlHealthView *self = user_data;
+  g_autoptr (GFile) folder =
+      gtk_file_dialog_select_folder_finish (GTK_FILE_DIALOG (source), res, NULL);
+  if (folder == NULL)
+    return; /* dismissed -- not an error */
+
+  g_autofree char *path = g_file_get_path (folder);
+  if (path == NULL)
+    return;
+
+  g_signal_emit (self, signals[SIG_ARCHIVE_ROOT_CHOSEN], 0, path);
+}
+
+static void
+on_choose_root (GtkButton *btn, gpointer user_data)
+{
+  YtdlHealthView *self = user_data;
+  GtkFileDialog *dlg = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (
+      dlg, "Choose the archive folder (a data root, or Complete Archive "
+           "itself)");
+
+  const char *current = self->settings->archive_root;
+  if (current != NULL && *current != '\0')
+    {
+      g_autofree char *expanded = ytdl_expand_tilde (current);
+      if (g_file_test (expanded, G_FILE_TEST_IS_DIR))
+        {
+          g_autoptr (GFile) f = g_file_new_for_path (expanded);
+          gtk_file_dialog_set_initial_folder (dlg, f);
+        }
+    }
+
+  GtkWidget *root = GTK_WIDGET (gtk_widget_get_root (GTK_WIDGET (self)));
+  gtk_file_dialog_select_folder (dlg,
+                                 GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                                 NULL, on_root_chosen, self);
+  g_object_unref (dlg);
+}
+
 static void
 ytdl_health_view_init (YtdlHealthView *self)
 {
@@ -445,8 +526,23 @@ ytdl_health_view_init (YtdlHealthView *self)
 }
 
 static void
+ytdl_health_view_finalize (GObject *object)
+{
+  YtdlHealthView *self = YTDL_HEALTH_VIEW (object);
+  g_clear_pointer (&self->archive_root, g_free);
+  G_OBJECT_CLASS (ytdl_health_view_parent_class)->finalize (object);
+}
+
+static void
 ytdl_health_view_class_init (YtdlHealthViewClass *klass)
 {
+  G_OBJECT_CLASS (klass)->finalize = ytdl_health_view_finalize;
+
+  /* Carries the folder the user picked, unresolved and unvalidated. */
+  signals[SIG_ARCHIVE_ROOT_CHOSEN] =
+      g_signal_new ("archive-root-chosen", G_TYPE_FROM_CLASS (klass),
+                    G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
+                    G_TYPE_STRING);
 }
 
 GtkWidget *
@@ -482,8 +578,21 @@ ytdl_health_view_new (YtdlSettings *settings)
                            &self->files_box));
   gtk_box_append (GTK_BOX (content),
                   section ("yt-dlp.conf", NULL, &self->config_box));
+  /* The GUI counterpart of --archive-root. Autodetection walks
+   * $YTDLP_INSTALL_ROOT, ~/yt-dlp, ~/Documents/yt-dlp and ~; an archive on a
+   * NAS mount or a second disk is not in that list, and a flag is no help to
+   * anyone launching from the desktop file. */
+  self->choose_root = gtk_button_new_with_label ("Choose folder…");
+  gtk_widget_set_tooltip_text (
+      self->choose_root,
+      "Point the app at an archive autodetection does not find. Accepts a "
+      "data root, the 'Youtube Videos' folder, 'Complete Archive' itself, or "
+      "a single channel folder -- the same set as --archive-root.");
+  g_signal_connect (self->choose_root, "clicked", G_CALLBACK (on_choose_root),
+                    self);
+
   gtk_box_append (GTK_BOX (content),
-                  section ("Archive", NULL, &self->stats_box));
+                  section ("Archive", self->choose_root, &self->stats_box));
 
   static const char *const log_labels[] = { "download.log", "archive.txt",
                                             NULL };

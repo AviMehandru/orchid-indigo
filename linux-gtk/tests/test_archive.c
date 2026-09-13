@@ -512,6 +512,10 @@ void ytdl_register_detail_tests (void);
 /* Defined in test_profiles.c -- the named option sets. */
 void ytdl_register_profile_tests (void);
 
+/* Defined in test_paths.c -- the precedence between --archive-root, the
+ * stored root and autodetection. */
+void ytdl_register_paths_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -544,6 +548,7 @@ main (int argc, char **argv)
   ytdl_register_pipeline_tests ();
   ytdl_register_detail_tests ();
   ytdl_register_profile_tests ();
+  ytdl_register_paths_tests ();
 
   return g_test_run ();
 }
