@@ -96,6 +96,15 @@ restart, live progress parsed from yt-dlp's own output, run history with the
 four session-summary counts and a Clear that forgets them, pause, and a cancel
 that kills the whole process tree.
 
+A **Preview** button reads the URL before anything is downloaded, via
+`ytdl --probe`: title, thumbnail, duration, uploader and the real format
+table. The Quality, codec and container rows are then rebuilt from what the
+video actually has — so 1440p is offered only if it exists, and MP4 only if a
+merge could produce it — and a playlist comes back as a tick list that writes
+`--items` for you. Against a pipeline too old to have `--probe`, the app falls
+back to reading `yt-dlp -J` itself and says so, because the fallback cannot
+use the PO token provider and its format table may be the thinner one.
+
 **Health** — the seven dependencies probed in parallel with versions and an
 8-second ceiling each, which pipeline files are actually installed (not what
 is in a checkout), `CONFIG_VERSION`, archive counts, the archive root actually

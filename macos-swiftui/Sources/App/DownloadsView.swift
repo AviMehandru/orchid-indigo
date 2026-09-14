@@ -40,6 +40,29 @@ final class DownloadsModel: ObservableObject {
     @Published var status = ""
     @Published var statusIsError = false
 
+    /* The URL preview.
+     *
+     * The form used to know nothing about the URL in it until the run failed:
+     * the Quality picker was a fixed ladder, asking for 1440p AV1 was a
+     * request that silently resolved to something else, and a typo'd URL was
+     * discovered by a failed row in the history list. Everything below exists
+     * to answer the question before Add to queue rather than after. */
+    @Published var probe: UrlProbe?
+    @Published var probeStatus = ""
+    @Published var probeStatusIsError = false
+    @Published var probeRunning = false
+    /// The ticked playlist positions. 1-based, because that is what
+    /// --playlist-items counts.
+    @Published var selectedItems: Set<Int> = []
+
+    /// Non-nil only while a probe is in flight.
+    private var cancellation: UrlProbeCancellation?
+
+    /// Set while `opts.items` is being rewritten from the tick boxes, so the
+    /// change handler does not immediately re-derive the boxes from the text
+    /// it just wrote.
+    private var writingItems = false
+
     init(settings: Settings, store: ProfileStore) {
         opts.dataRoot = settings.dataRoot
         opts.workers = settings.defaultWorkers
@@ -91,6 +114,180 @@ final class DownloadsModel: ObservableObject {
         status = text
         statusIsError = isError
     }
+
+    // MARK: - The preview
+
+    /* Everything the preview put on screen goes away, and every picker goes
+     * back to its full static list.
+     *
+     * Called when the URL changes, which is the important case: a Quality
+     * picker still showing the heights of the PREVIOUS video, against a URL
+     * that has been replaced, is worse than one showing the generic ladder --
+     * it looks like knowledge and is not. */
+    func clearProbe() {
+        cancellation?.cancel()
+        cancellation = nil
+        probe = nil
+        probeRunning = false
+        probeStatus = ""
+        probeStatusIsError = false
+        selectedItems = []
+    }
+
+    func startProbe() {
+        /* A second press while one is running cancels it rather than starting
+         * a race between two answers for the same form. */
+        if probeRunning {
+            cancellation?.cancel()
+            cancellation = nil
+            probeRunning = false
+            probeStatus = ""
+            return
+        }
+        guard !opts.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            probeStatus = "Paste a URL first."
+            probeStatusIsError = true
+            return
+        }
+
+        let token = UrlProbeCancellation()
+        cancellation = token
+        probeRunning = true
+        probeStatus = "Reading the URL…"
+        probeStatusIsError = false
+
+        let request = UrlProbeRunner.Request(
+            url: opts.url,
+            items: opts.items,
+            noPot: opts.noPot,
+            potPort: opts.potPort,
+            /* The same list the run would send, so a URL that needs
+             * --cookies-from-browser is probed with it too -- a preview that
+             * fails where the download would succeed is worse than none. */
+            extraArgs: opts.ytdlpArgs
+        )
+
+        UrlProbeRunner.run(request, cancellation: token) { [weak self] result in
+            /* The hop is here rather than inside the runner: everything below
+             * touches this @MainActor model's state, and a plain
+             * DispatchQueue.main.async closure is nonisolated no matter which
+             * queue it happens to run on. */
+            Task { @MainActor in
+                guard let self = self else { return }
+                /* A probe whose token has been replaced belongs to a URL the
+                 * user has since changed. Its answer describes a different
+                 * video, so it is dropped rather than written into the form. */
+                guard self.cancellation === token else { return }
+                self.cancellation = nil
+                self.probeRunning = false
+
+                switch result {
+                case .failure(let error):
+                    if let e = error as? UrlProbeRunner.RunError,
+                       case .cancelled = e {
+                        self.probeStatus = ""
+                        self.probeStatusIsError = false
+                        return
+                    }
+                    /* The message is yt-dlp's or ytdl.ps1's own sentence --
+                     * "Video unavailable", "Sign in to confirm your age" --
+                     * not one invented here, because theirs says what to do
+                     * about it. */
+                    self.probeStatus = error.localizedDescription
+                    self.probeStatusIsError = true
+                case .success(let p):
+                    self.apply(probe: p)
+                }
+            }
+        }
+    }
+
+    private func apply(probe p: UrlProbe) {
+        probe = p
+        /* Said, not guessed around. The contract's rule is that fields are
+         * added and never redefined, so a newer document is still readable --
+         * but the one thing this app must not do is present a partial reading
+         * of it as a complete one. */
+        if p.probeVersion > UrlProbe.supportedVersion {
+            probeStatus = "This pipeline's probe is newer than this app knows "
+                + "about; some of what it reported is not shown."
+            probeStatusIsError = false
+        } else {
+            probeStatus = ""
+            probeStatusIsError = false
+        }
+
+        clampSelectionsToProbe()
+        syncSelectedItemsFromText()
+    }
+
+    /* A selection the probed URL does not offer cannot stay: leaving 1440p
+     * chosen for a video that turned out to be 1080p at best reads as
+     * honoured and is not. The view says so in its note row. */
+    private func clampSelectionsToProbe() {
+        guard let p = probe else { return }
+        if !p.containers.isEmpty, !p.containers.contains(opts.container) {
+            opts.container = p.containers[0]
+        }
+        if opts.codec != "any", !p.videoCodecs.contains(opts.codec) {
+            opts.codec = "any"
+        }
+        if opts.audioCodec != "any", !p.audioCodecs.contains(opts.audioCodec) {
+            opts.audioCodec = "any"
+        }
+        if opts.quality != "best" {
+            let available = p.heights(forCodec: opts.codec).map(String.init)
+            if !available.contains(opts.quality) { opts.quality = "best" }
+        }
+    }
+
+    /// Turn the ticked rows into an --items value.
+    ///
+    /// The empty string is a meaningful answer and not a failure to produce
+    /// one: ytdl with no --items takes the whole listing, which is what
+    /// "everything is ticked" means. Writing out "1-200" instead would
+    /// silently CAP a 4,000-video channel at the entries this window happened
+    /// to enumerate -- the run would succeed and quietly archive a twentieth
+    /// of what was asked for. So a full selection only collapses to "" when
+    /// the list is known to be complete.
+    func writeItemsFromSelection() {
+        guard let p = probe, !p.entries.isEmpty else { return }
+        let all = p.entries.allSatisfy { selectedItems.contains($0.index) }
+        let complete = all && !p.entriesTruncated
+
+        writingItems = true
+        opts.items = complete ? "" : ItemsRange.compact(Array(selectedItems))
+        writingItems = false
+    }
+
+    /// The reverse: a range typed, or restored from a profile, re-ticks the
+    /// rows, so the two halves of the same statement cannot disagree on
+    /// screen.
+    func syncSelectedItemsFromText() {
+        guard let p = probe, !p.entries.isEmpty else { return }
+        let spec = opts.items.trimmingCharacters(in: .whitespaces)
+        if spec.isEmpty {
+            selectedItems = Set(p.entries.map { $0.index })
+            return
+        }
+        selectedItems = Set(ItemsRange.parse(spec))
+    }
+
+    func itemsTextChanged() {
+        guard !writingItems else { return }
+        syncSelectedItemsFromText()
+    }
+
+    func setItem(_ index: Int, selected: Bool) {
+        if selected { selectedItems.insert(index) } else { selectedItems.remove(index) }
+        writeItemsFromSelection()
+    }
+
+    func selectAllItems(_ on: Bool) {
+        guard let p = probe else { return }
+        selectedItems = on ? Set(p.entries.map { $0.index }) : []
+        writeItemsFromSelection()
+    }
 }
 
 struct DownloadsView: View {
@@ -141,6 +338,7 @@ struct DownloadsView: View {
         Form {
             profileSection
             downloadSection
+            previewSection
             formatSection
             passesSection
             advancedSection
@@ -205,8 +403,40 @@ struct DownloadsView: View {
 
     private var downloadSection: some View {
         Section("Download") {
-            TextField("Video, playlist or channel URL", text: $form.opts.url)
-                .textFieldStyle(.roundedBorder)
+            HStack {
+                TextField("Video, playlist or channel URL", text: $form.opts.url)
+                    .textFieldStyle(.roundedBorder)
+                    /* Editing the URL invalidates any preview on screen: a
+                     * Quality picker still listing the previous video's
+                     * heights is worse than one listing the generic ladder,
+                     * because it looks like knowledge. */
+                    .onChange(of: form.opts.url) { _ in
+                        if form.probe != nil || form.probeRunning { form.clearProbe() }
+                    }
+
+                Button {
+                    form.startProbe()
+                } label: {
+                    Label(form.probeRunning ? "Stop" : "Preview",
+                          systemImage: form.probeRunning ? "stop.circle" : "magnifyingglass")
+                }
+                .help("Read this URL without downloading it")
+            }
+
+            /* --items, which had no control at all before the preview existed
+             * -- it was part of a saved profile and reachable only by typing
+             * yt-dlp's range syntax into the Advanced box as a passthrough. It
+             * stays a text field rather than becoming purely a set of tick
+             * boxes, for two reasons: the open-ended forms ("200-") cannot be
+             * expressed by ticking a list that was truncated, and a range is
+             * what a profile stores. Ticking writes here; typing here
+             * re-ticks. */
+            TextField(
+                "Playlist items — empty means all of them (e.g. 1-20, 5,8,10-15)",
+                text: $form.opts.items
+            )
+            .textFieldStyle(.roundedBorder)
+            .onChange(of: form.opts.items) { _ in form.itemsTextChanged() }
 
             HStack {
                 TextField(
@@ -238,6 +468,243 @@ struct DownloadsView: View {
         }
     }
 
+    // MARK: - What the URL actually is
+
+    /* Hidden entirely until there is something to say. An empty Preview
+     * section sitting above Format would read as a section that failed to
+     * load. */
+    @ViewBuilder
+    private var previewSection: some View {
+        if form.probeRunning || form.probe != nil || !form.probeStatus.isEmpty {
+            Section("Preview") {
+                if !form.probeStatus.isEmpty {
+                    HStack(spacing: 6) {
+                        if form.probeRunning { ProgressView().controlSize(.small) }
+                        Text(form.probeStatus)
+                            .foregroundStyle(form.probeStatusIsError ? .red : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if form.probeRunning {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading the URL…").foregroundStyle(.secondary)
+                    }
+                }
+
+                if let p = form.probe {
+                    metadataRow(p)
+                    if !previewNote(p).isEmpty {
+                        Text(previewNote(p))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    formatDisclosure(p)
+                    if !p.entries.isEmpty { entriesDisclosure(p) }
+                }
+            }
+        }
+    }
+
+    private func metadataRow(_ p: UrlProbe) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            /* AsyncImage rather than a hand-rolled fetch: it is the platform's
+             * own, it cancels with the view, and a thumbnail that fails to
+             * load leaves the rest of the preview exactly as it was. The
+             * thumbnail is the one part of this allowed to be absent. */
+            AsyncImage(url: URL(string: p.thumbnail)) { image in
+                image.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Color.clear
+            }
+            .frame(width: 128, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(p.title.isEmpty ? "(no title)" : p.title)
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(metadataLine(p))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private func metadataLine(_ p: UrlProbe) -> String {
+        var bits: [String] = []
+        if !p.uploader.isEmpty { bits.append(p.uploader) }
+        if p.duration > 0 { bits.append(Formatting.duration(p.duration)) }
+        if p.viewCount > 0 { bits.append("\(Formatting.count(p.viewCount)) views") }
+        if !p.uploadDate.isEmpty {
+            let d = Formatting.uploadDate(p.uploadDate)
+            if !d.isEmpty { bits.append(d) }
+        }
+        if p.isPlaylist {
+            bits.append("\(p.entryCount) item\(p.entryCount == 1 ? "" : "s")")
+        }
+        return bits.joined(separator: " · ")
+    }
+
+    /// Everything the user should not have to infer.
+    private func previewNote(_ p: UrlProbe) -> String {
+        var note = ""
+        if p.fromFallback {
+            note += "Read with yt-dlp directly: the installed pipeline predates "
+                + "`ytdl --probe`, so the PO token provider was not used and the "
+                + "list may be short. "
+        } else if !p.potHealthy, !p.potNote.isEmpty {
+            note += p.potNote + " "
+        }
+        if !p.formatsFromID.isEmpty {
+            /* Named rather than presented as the playlist's own, because a
+             * channel can serve 4K AV1 for a recent upload and 360p AVC for
+             * one from 2011. */
+            let which = p.formatsFromTitle.isEmpty ? p.formatsFromID : p.formatsFromTitle
+            note += "Formats shown are for \"\(which)\". "
+        }
+        if p.ageLimit > 0 { note += "Age restricted (\(p.ageLimit)+). " }
+        if p.liveStatus == "is_live" { note += "This is live right now. " }
+        return note.trimmingCharacters(in: .whitespaces)
+    }
+
+    private func formatDisclosure(_ p: UrlProbe) -> some View {
+        DisclosureGroup(
+            "Formats — \(p.formats.count) rendition\(p.formats.count == 1 ? "" : "s") this video actually has"
+        ) {
+            ForEach(p.formats, id: \.formatID) { f in
+                HStack {
+                    Text(f.height > 0 ? "\(f.height)p" : "Audio")
+                        .frame(width: 60, alignment: .leading)
+                    Text(formatDetail(f))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private func formatDetail(_ f: UrlProbeFormat) -> String {
+        var bits = [f.formatID.isEmpty ? "?" : f.formatID]
+        if f.hasVideoStream { bits.append(f.vcodec) }
+        if f.hasAudioStream { bits.append(f.acodec) }
+        if !f.ext.isEmpty { bits.append(f.ext) }
+        /* An exact size and an estimate are shown differently on purpose: the
+         * tilde is the difference between a fact and yt-dlp's tbr*duration
+         * guess, and presenting the guess as a fact is how a 4 GB download
+         * surprises someone. */
+        if f.filesize > 0 {
+            bits.append(Formatting.bytes(UInt64(f.filesize)))
+        } else if f.filesizeApprox > 0 {
+            bits.append("~" + Formatting.bytes(UInt64(f.filesizeApprox)))
+        }
+        return bits.joined(separator: " · ")
+    }
+
+    private func entriesDisclosure(_ p: UrlProbe) -> some View {
+        DisclosureGroup(entriesLabel(p)) {
+            HStack {
+                Button("All") { form.selectAllItems(true) }
+                Button("None") { form.selectAllItems(false) }
+                Spacer()
+            }
+            .buttonStyle(.link)
+
+            ForEach(p.entries) { e in
+                Toggle(isOn: Binding(
+                    get: { form.selectedItems.contains(e.index) },
+                    set: { form.setItem(e.index, selected: $0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(e.index). \(e.title.isEmpty ? "(untitled)" : e.title)")
+                        Text(entryDetail(e))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func entriesLabel(_ p: UrlProbe) -> String {
+        var label = "Playlist items — \(p.entryCount) item\(p.entryCount == 1 ? "" : "s")"
+        if p.playlistCount > p.entryCount { label += " of \(p.playlistCount)" }
+        if p.entriesTruncated {
+            /* Said out loud, because a silently short list of a 4,000-upload
+             * channel reads as a complete one. */
+            label += " · the listing was cut short; use the range field to reach the rest"
+        }
+        return label
+    }
+
+    private func entryDetail(_ e: UrlProbeEntry) -> String {
+        var bits: [String] = []
+        if e.duration > 0 { bits.append(Formatting.duration(e.duration)) }
+        if !e.videoID.isEmpty { bits.append(e.videoID) }
+        return bits.joined(separator: " · ")
+    }
+
+    // MARK: - Format
+
+    /* The four pickers below are REBUILT from the probe when there is one, and
+     * fall back to the static lists when there is not. "Best" and "Any" are
+     * pinned first in their lists and are not probed values: they are pipeline
+     * concepts, always available, meaning "no cap" and "no preference". */
+    private var qualityChoices: [String] {
+        guard let p = form.probe else { return ["2160", "1440", "1080", "720", "480", "360"] }
+        /* Cross-filtered by the selected codec: 1440p is commonly published
+         * only in VP9, so a list built from the union of every height offers a
+         * combination this video does not have -- the same silent wrong answer
+         * the static ladder gave, with better-looking numbers in it. */
+        return p.heights(forCodec: form.opts.codec).map(String.init)
+    }
+
+    private var codecChoices: [String] {
+        form.probe?.videoCodecs ?? ["avc1", "vp9", "av01"]
+    }
+
+    private var audioCodecChoices: [String] {
+        form.probe?.audioCodecs ?? ["opus", "aac", "mp3", "flac"]
+    }
+
+    private var containerChoices: [String] {
+        let c = form.probe?.containers ?? ["mkv", "mp4", "webm"]
+        /* Never empty: a Picker with no rows renders as a blank control that
+         * cannot be opened, which reads as a broken widget rather than as
+         * "this video has none of these". mkv is always muxable. */
+        return c.isEmpty ? ["mkv"] : c
+    }
+
+    private static func videoCodecLabel(_ id: String) -> String {
+        switch id {
+        case "avc1": return "AVC1 / H.264"
+        case "vp9": return "VP9"
+        case "av01": return "AV1"
+        default: return id
+        }
+    }
+
+    private static func audioCodecLabel(_ id: String) -> String {
+        switch id {
+        case "opus": return "Opus"
+        case "aac": return "AAC"
+        case "mp3": return "MP3"
+        case "flac": return "FLAC"
+        default: return id
+        }
+    }
+
+    private static func containerLabel(_ id: String) -> String {
+        switch id {
+        case "mkv": return "MKV"
+        case "mp4": return "MP4"
+        case "webm": return "WebM"
+        default: return id
+        }
+    }
+
     private var formatSection: some View {
         Section("Format") {
             Picker("Mode", selection: $form.opts.mode) {
@@ -254,32 +721,41 @@ struct DownloadsView: View {
 
             Picker("Quality", selection: $form.opts.quality) {
                 Text("Best").tag("best")
-                ForEach(["2160", "1440", "1080", "720", "480", "360"], id: \.self) { h in
+                ForEach(qualityChoices, id: \.self) { h in
                     Text("\(h)p").tag(h)
                 }
             }
-            Text("A ceiling, not a demand — a video that was never published at this height "
-                 + "comes down at the best it has.")
+            Text(form.probe == nil
+                 ? "A ceiling, not a demand — a video that was never published at this height "
+                   + "comes down at the best it has."
+                 : "The heights this video actually has, for the codec selected below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Picker("Video codec", selection: $form.opts.codec) {
                 Text("Any").tag("any")
-                Text("AVC1 / H.264").tag("avc1")
-                Text("VP9").tag("vp9")
-                Text("AV1").tag("av01")
+                ForEach(codecChoices, id: \.self) { c in
+                    Text(DownloadsView.videoCodecLabel(c)).tag(c)
+                }
             }
+            /* Changing the codec re-filters the Quality list, so a height that
+             * only VP9 offers cannot stay selected once AV1 is chosen. */
+            .onChange(of: form.opts.codec) { _ in
+                guard let p = form.probe, form.opts.quality != "best" else { return }
+                let available = p.heights(forCodec: form.opts.codec).map(String.init)
+                if !available.contains(form.opts.quality) { form.opts.quality = "best" }
+            }
+
             Picker("Audio codec", selection: $form.opts.audioCodec) {
                 Text("Any").tag("any")
-                Text("Opus").tag("opus")
-                Text("AAC").tag("aac")
-                Text("MP3").tag("mp3")
-                Text("FLAC").tag("flac")
+                ForEach(audioCodecChoices, id: \.self) { c in
+                    Text(DownloadsView.audioCodecLabel(c)).tag(c)
+                }
             }
             Picker("Container", selection: $form.opts.container) {
-                Text("MKV").tag("mkv")
-                Text("MP4").tag("mp4")
-                Text("WebM").tag("webm")
+                ForEach(containerChoices, id: \.self) { c in
+                    Text(DownloadsView.containerLabel(c)).tag(c)
+                }
             }
             Text("MKV keeps everything the pipeline embeds. MP4 is the one AVFoundation can "
                  + "play in this window.")

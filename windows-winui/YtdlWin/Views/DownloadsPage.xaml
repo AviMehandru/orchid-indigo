@@ -64,8 +64,17 @@
                 <!-- Download -->
                 <TextBlock Text="Download" Style="{StaticResource SectionHeader}" />
                 <local:OptionRow Header="URL" Description="A video, playlist or channel.">
-                    <TextBox x:Name="UrlBox" MinWidth="320" TextChanged="OnUrlChanged"
-                             PlaceholderText="https://www.youtube.com/watch?v=…" />
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBox x:Name="UrlBox" MinWidth="260" TextChanged="OnUrlChanged"
+                                 PlaceholderText="https://www.youtube.com/watch?v=…" />
+                        <Button x:Name="ProbeButton" Click="OnProbe"
+                                ToolTipService.ToolTip="Read this URL without downloading it">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon x:Name="ProbeIcon" Glyph="&#xE721;" FontSize="14" />
+                                <TextBlock x:Name="ProbeButtonText" Text="Preview" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
                 </local:OptionRow>
 
                 <local:OptionRow Header="Destination"
@@ -75,6 +84,97 @@
                         <Button Content="Choose…" Click="OnChooseFolder" />
                     </StackPanel>
                 </local:OptionRow>
+
+                <!--
+                    --items, which had no control at all before the preview
+                    existed: it was part of a saved profile and reachable only
+                    by typing yt-dlp's range syntax into the Advanced box as a
+                    passthrough. It stays a text field rather than becoming
+                    purely a set of tick boxes, for two reasons -- the
+                    open-ended forms ("200-") cannot be expressed by ticking a
+                    list that was truncated, and a range is what a profile
+                    stores. Ticking writes here; typing here re-ticks.
+                -->
+                <local:OptionRow Header="Playlist items"
+                                   Description="Empty means all of them. yt-dlp's own syntax — 1-20, or 5,8,10-15.">
+                    <TextBox x:Name="ItemsBox" MinWidth="260" TextChanged="OnItemsChanged"
+                             PlaceholderText="all" />
+                </local:OptionRow>
+
+                <!--
+                    Preview. Collapsed until there is something to say: an
+                    empty card above the Format section would read as a section
+                    that failed to load.
+                -->
+                <StackPanel x:Name="PreviewSection" Visibility="Collapsed" Spacing="4">
+                    <TextBlock Text="Preview" Style="{StaticResource SectionHeader}"
+                               Margin="0,12,0,4" />
+                    <TextBlock Style="{StaticResource CaptionSecondary}" Margin="0,0,0,8"
+                               Text="Read from the URL without downloading anything. The Quality, codec and container rows below are rebuilt from what this video actually has." />
+
+                    <Border Style="{StaticResource CardBorder}" Padding="12">
+                        <StackPanel Spacing="8">
+                            <StackPanel x:Name="ProbeStatusPanel" Orientation="Horizontal"
+                                        Spacing="8" Visibility="Collapsed">
+                                <muxc:ProgressRing x:Name="ProbeSpinner" IsActive="False"
+                                                   Width="16" Height="16"
+                                                   VerticalAlignment="Center" />
+                                <TextBlock x:Name="ProbeStatusText" TextWrapping="Wrap"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <StackPanel x:Name="ProbeMetaPanel" Orientation="Horizontal"
+                                        Spacing="12" Visibility="Collapsed">
+                                <!--
+                                    A fixed box rather than a natural size:
+                                    thumbnails come back at anything from
+                                    120x90 to 1280x720, and a row that changes
+                                    height with whichever arrived makes the
+                                    whole card jump.
+                                -->
+                                <Border Width="128" Height="72" CornerRadius="4"
+                                        Background="{ThemeResource CardStrokeColorDefaultBrush}">
+                                    <Image x:Name="ProbeThumb" Stretch="UniformToFill" />
+                                </Border>
+                                <StackPanel VerticalAlignment="Center" Spacing="2">
+                                    <TextBlock x:Name="ProbeTitle" TextWrapping="Wrap"
+                                               Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock x:Name="ProbeMeta"
+                                               Style="{StaticResource CaptionSecondary}" />
+                                </StackPanel>
+                            </StackPanel>
+
+                            <TextBlock x:Name="ProbeNote" TextWrapping="Wrap"
+                                       Style="{StaticResource CaptionSecondary}"
+                                       Visibility="Collapsed" />
+
+                            <muxc:Expander x:Name="FormatsExpander" HorizontalAlignment="Stretch"
+                                           Visibility="Collapsed">
+                                <muxc:Expander.Header>
+                                    <TextBlock x:Name="FormatsHeader" Text="Formats" />
+                                </muxc:Expander.Header>
+                                <ListView x:Name="FormatsList" SelectionMode="None"
+                                          MaxHeight="220" />
+                            </muxc:Expander>
+
+                            <muxc:Expander x:Name="EntriesExpander" HorizontalAlignment="Stretch"
+                                           Visibility="Collapsed">
+                                <muxc:Expander.Header>
+                                    <TextBlock x:Name="EntriesHeader" Text="Playlist items"
+                                               TextWrapping="Wrap" />
+                                </muxc:Expander.Header>
+                                <StackPanel Spacing="4">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Button Content="All" Click="OnSelectAllItems" />
+                                        <Button Content="None" Click="OnSelectNoItems" />
+                                    </StackPanel>
+                                    <ListView x:Name="EntriesList" SelectionMode="None"
+                                              MaxHeight="280" />
+                                </StackPanel>
+                            </muxc:Expander>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
 
                 <!-- Format -->
                 <TextBlock Text="Format" Style="{StaticResource SectionHeader}" Margin="0,12,0,8" />

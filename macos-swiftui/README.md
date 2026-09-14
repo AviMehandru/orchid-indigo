@@ -92,7 +92,7 @@ default is the one recovery nobody can undo.
 | Pane | What it does |
 |---|---|
 | Library | media cards, thumbnails, live search, threaded scan |
-| Downloads | the option form, the command preview, queue, live progress, history, pause, cancel |
+| Downloads | the option form, the URL preview, the command preview, queue, live progress, history, pause, cancel |
 | Health | dependency probe, installed files, config, archive stats, log tails |
 | Video detail | player, streams, metadata, comments, transcript, files, checksum verify |
 | Profiles | named option sets, saved and restored; a fresh install starts with **Default** |

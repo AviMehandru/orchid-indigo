@@ -516,6 +516,10 @@ void ytdl_register_profile_tests (void);
  * stored root and autodetection. */
 void ytdl_register_paths_tests (void);
 
+/* Defined in test_probe.c -- the URL preview's two derivations, and the
+ * assertion that they agree. */
+void ytdl_register_url_probe_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -549,6 +553,7 @@ main (int argc, char **argv)
   ytdl_register_detail_tests ();
   ytdl_register_profile_tests ();
   ytdl_register_paths_tests ();
+  ytdl_register_url_probe_tests ();
 
   return g_test_run ();
 }

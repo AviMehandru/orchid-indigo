@@ -23,7 +23,9 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using System.Threading;
 using YtdlWin.Core;
 
 namespace YtdlWin.Views;
@@ -38,6 +40,29 @@ public sealed partial class DownloadsPage : Page
     private readonly ObservableCollection<string> _log = new();
     private DispatcherQueueTimer? _drain;
     private bool _suppressChanges;
+
+    /* The URL preview.
+     *
+     * The form used to know nothing about the URL in it until the run failed:
+     * the Quality list was a fixed ladder, asking for 1440p AV1 was a request
+     * that silently resolved to something else, and a typo'd URL was
+     * discovered by a failed row in the history list. */
+    private Probe? _probe;
+    private CancellationTokenSource? _probeCts;
+    private readonly List<CheckBox> _entryChecks = new();
+
+    /* Set while Items is being rewritten from the tick boxes, so the change
+     * handler does not immediately re-derive the boxes from the text it just
+     * wrote. Separate from _suppressChanges, which is held across whole-form
+     * rebuilds and would swallow the user's own typing. */
+    private bool _writingItems;
+
+    /// How many playlist entries get a tick row before the list is summarised
+    /// instead. A ListView builds these eagerly, so a 500-entry channel is 500
+    /// controls constructed on the UI thread the moment the expander opens --
+    /// a visible stall, for a list nobody scrolls to the bottom of. Past this
+    /// the range field stays the way to say what you want.
+    private const int MaxEntryRows = 200;
 
     private AppModel Model => AppModel.Current;
     private DownloadsFormState Form => Model.Form;
@@ -167,6 +192,10 @@ public sealed partial class DownloadsPage : Page
 
         UrlBox.Text = Form.Opts.Url;
         DataRootBox.Text = Form.Opts.DataRoot;
+        /* Applied even when empty: an empty range means "all of them", which
+         * is a real setting rather than an unset one, and leaving a previous
+         * URL's selection in place would silently narrow the next run. */
+        ItemsBox.Text = Form.Opts.Items;
         ExtraArgsBox.Text = Form.ExtraArgsText;
         WorkersBox.Value = Math.Max(1, Form.Opts.Workers);
 
@@ -226,6 +255,10 @@ public sealed partial class DownloadsPage : Page
     {
         if (_suppressChanges) return;
         Form.Opts.Url = UrlBox.Text;
+        /* Editing the URL invalidates any preview on screen: a Quality row
+         * still listing the previous video's heights is worse than one listing
+         * the generic ladder, because it looks like knowledge. */
+        if (_probe != null || _probeCts != null) ClearProbe();
         UpdatePreview();
     }
 
@@ -248,6 +281,19 @@ public sealed partial class DownloadsPage : Page
         Form.Opts.Codec = Selected(CodecBox);
         Form.Opts.AudioCodec = Selected(AudioCodecBox);
         Form.Opts.Container = Selected(ContainerBox);
+
+        /* Changing the codec re-filters the Quality list: 1440p is commonly
+         * published only in VP9, so a height that only one codec offers cannot
+         * stay selected once another is chosen. Only the codec box triggers
+         * this -- rebuilding on every selection would reset Quality whenever
+         * the user touched Container. */
+        if (_probe != null && ReferenceEquals(sender, CodecBox))
+        {
+            _suppressChanges = true;
+            RebuildCombos();
+            _suppressChanges = false;
+        }
+
         UpdatePreview();
     }
 
@@ -294,6 +340,511 @@ public sealed partial class DownloadsPage : Page
         var shown = Form.Opts.Clone();
         if (string.IsNullOrWhiteSpace(shown.Url)) shown.Url = "<URL>";
         PreviewText.Text = shown.CommandPreview();
+    }
+
+    // MARK: - The URL preview
+
+    private void OnItemsChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        Form.Opts.Items = ItemsBox.Text;
+        /* _writingItems is set while WriteItemsFromChecks is the one editing,
+         * which is what keeps ticking a box from immediately re-deriving the
+         * boxes from the text it just wrote. */
+        if (!_writingItems) SyncChecksFromItems();
+        UpdatePreview();
+    }
+
+    private async void OnProbe(object sender, RoutedEventArgs e)
+    {
+        /* A second press while one is running cancels it rather than starting
+         * a race between two answers for the same form. */
+        if (_probeCts != null)
+        {
+            _probeCts.Cancel();
+            _probeCts = null;
+            SetProbeBusy(false);
+            SetProbeStatus("", isError: false);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(UrlBox.Text))
+        {
+            PreviewSection.Visibility = Visibility.Visible;
+            ProbeMetaPanel.Visibility = Visibility.Collapsed;
+            SetProbeStatus("Paste a URL first.", isError: true);
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _probeCts = cts;
+        PreviewSection.Visibility = Visibility.Visible;
+        ProbeMetaPanel.Visibility = Visibility.Collapsed;
+        SetProbeBusy(true);
+        SetProbeStatus("Reading the URL…", isError: false);
+
+        var request = new ProbeRequest
+        {
+            Url = UrlBox.Text,
+            Items = ItemsBox.Text,
+            NoPot = Form.Opts.NoPot,
+            PotPort = Form.Opts.PotPort,
+            /* The same list the run would send, so a URL that needs
+             * --cookies-from-browser is probed with it too -- a preview that
+             * fails where the download would succeed is worse than none. */
+            ExtraArgs = new List<string>(Form.Opts.YtdlpArgs),
+        };
+
+        ProbeResult result;
+        try
+        {
+            result = await ProbeRunner.RunAsync(request, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            result = new ProbeResult { Cancelled = true };
+        }
+
+        /* A probe whose token has been replaced belongs to a URL the user has
+         * since changed. Its answer describes a different video, so it is
+         * dropped rather than written into the form. */
+        if (!ReferenceEquals(_probeCts, cts)) return;
+        _probeCts = null;
+        SetProbeBusy(false);
+
+        if (result.Cancelled)
+        {
+            SetProbeStatus("", isError: false);
+            return;
+        }
+        if (!result.Ok)
+        {
+            /* The message is yt-dlp's or ytdl.ps1's own sentence -- "Video
+             * unavailable", "Sign in to confirm your age" -- not one invented
+             * here, because theirs says what to do about it. */
+            ProbeMetaPanel.Visibility = Visibility.Collapsed;
+            SetProbeStatus(result.Error, isError: true);
+            return;
+        }
+
+        _probe = result.Probe;
+        if (_probe!.ProbeVersion > Probe.SupportedVersion)
+        {
+            /* Said, not guessed around. The contract's rule is that fields are
+             * added and never redefined, so a newer document is still readable
+             * -- but the one thing this app must not do is present a partial
+             * reading of it as a complete one. */
+            SetProbeStatus(
+                "This pipeline's probe is newer than this app knows about; "
+                + "some of what it reported is not shown.", isError: false);
+        }
+        else
+        {
+            SetProbeStatus("", isError: false);
+        }
+
+        ApplyProbe();
+    }
+
+    private void SetProbeBusy(bool busy)
+    {
+        ProbeSpinner.IsActive = busy;
+        ProbeSpinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        ProbeButtonText.Text = busy ? "Stop" : "Preview";
+        ProbeIcon.Glyph = busy ? "" : "";
+    }
+
+    private void SetProbeStatus(string text, bool isError)
+    {
+        ProbeStatusText.Text = text;
+        ProbeStatusText.Foreground = Controls.Resource<Brush>(
+            isError ? "SystemFillColorCriticalBrush" : "TextFillColorSecondaryBrush");
+        ProbeStatusPanel.Visibility =
+            string.IsNullOrEmpty(text) && !ProbeSpinner.IsActive
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+    }
+
+    /* Everything the preview put on screen goes away, and every combo goes
+     * back to its full static list.
+     *
+     * Called when the URL changes, which is the important case: a Quality row
+     * still showing the heights of the PREVIOUS video, against a URL that has
+     * been replaced, is worse than one showing the generic ladder -- it looks
+     * like knowledge and is not. */
+    private void ClearProbe()
+    {
+        _probeCts?.Cancel();
+        _probeCts = null;
+        _probe = null;
+        _entryChecks.Clear();
+        EntriesList.Items.Clear();
+        FormatsList.Items.Clear();
+        ProbeThumb.Source = null;
+        PreviewSection.Visibility = Visibility.Collapsed;
+        ProbeMetaPanel.Visibility = Visibility.Collapsed;
+        ProbeNote.Visibility = Visibility.Collapsed;
+        FormatsExpander.Visibility = Visibility.Collapsed;
+        EntriesExpander.Visibility = Visibility.Collapsed;
+        SetProbeBusy(false);
+        SetProbeStatus("", isError: false);
+
+        _suppressChanges = true;
+        RebuildCombos();
+        _suppressChanges = false;
+    }
+
+    /* The four combos are rebuilt from the probe when there is one and from
+     * the static tables when there is not. "Best" and "Any" are pinned first
+     * and are NOT probed values: they are pipeline concepts, always available,
+     * meaning "no cap" and "no preference". */
+    private void RebuildCombos()
+    {
+        var quality = new List<(string, string)> { ("Best", "best") };
+        /* Cross-filtered by the selected codec: 1440p is commonly published
+         * only in VP9, so a list built from the union of every height offers a
+         * combination this video does not have -- the same silent wrong answer
+         * the static ladder gave, with better-looking numbers in it. */
+        var heights = _probe?.HeightsForCodec(Form.Opts.Codec);
+        if (heights != null)
+        {
+            foreach (var h in heights)
+                quality.Add(($"{h}p", h.ToString(CultureInfo.InvariantCulture)));
+        }
+        else
+        {
+            foreach (var q in Qualities)
+                if (q.Value != "best") quality.Add((q.Label, q.Value));
+        }
+
+        var codecs = new List<(string, string)> { ("Any", "any") };
+        foreach (var c in _probe?.VideoCodecs ?? new List<string> { "avc1", "vp9", "av01" })
+            codecs.Add((VideoCodecLabel(c), c));
+
+        var audio = new List<(string, string)> { ("Any", "any") };
+        foreach (var c in _probe?.AudioCodecs ?? new List<string> { "opus", "aac", "mp3", "flac" })
+            audio.Add((AudioCodecLabel(c), c));
+
+        var containers = new List<(string, string)>();
+        var containerIds = _probe?.Containers;
+        /* Never empty: a ComboBox with no items renders as a blank control
+         * that cannot be opened, which reads as a broken widget rather than as
+         * "this video has none of these". mkv is always muxable. */
+        if (containerIds == null || containerIds.Count == 0)
+            containerIds = new List<string> { "mkv", "mp4", "webm" };
+        foreach (var c in containerIds) containers.Add((ContainerLabel(c), c));
+
+        Refill(QualityBox, quality, Form.Opts.Quality);
+        Refill(CodecBox, codecs, Form.Opts.Codec);
+        Refill(AudioCodecBox, audio, Form.Opts.AudioCodec);
+        Refill(ContainerBox, containers, Form.Opts.Container);
+
+        /* The form follows the controls, not the other way round: a value that
+         * did not survive the rebuild must not stay in Opts, or the command
+         * preview would show a flag the picker no longer offers. */
+        Form.Opts.Quality = Selected(QualityBox);
+        Form.Opts.Codec = Selected(CodecBox);
+        Form.Opts.AudioCodec = Selected(AudioCodecBox);
+        Form.Opts.Container = Selected(ContainerBox);
+    }
+
+    /// Replace a combo's items, keeping <paramref name="keep"/> selected when
+    /// the new set still contains it and falling back to the first entry when
+    /// it does not.
+    private static void Refill(
+        ComboBox box, List<(string Label, string Value)> items, string keep)
+    {
+        box.Items.Clear();
+        foreach (var (label, value) in items)
+            box.Items.Add(new ComboBoxItem { Content = label, Tag = value });
+        Select(box, keep);
+    }
+
+    private static string VideoCodecLabel(string id) => id switch
+    {
+        "avc1" => "AVC1 / H.264",
+        "vp9" => "VP9",
+        "av01" => "AV1",
+        _ => id,
+    };
+
+    private static string AudioCodecLabel(string id) => id switch
+    {
+        "opus" => "Opus",
+        "aac" => "AAC",
+        "mp3" => "MP3",
+        "flac" => "FLAC",
+        _ => id,
+    };
+
+    private static string ContainerLabel(string id) => id switch
+    {
+        "mkv" => "MKV",
+        "mp4" => "MP4",
+        "webm" => "WebM",
+        _ => id,
+    };
+
+    /// Everything the probe knows, written into the form and onto the screen.
+    private void ApplyProbe()
+    {
+        var p = _probe;
+        if (p == null) return;
+
+        var wantedQuality = Form.Opts.Quality;
+        var wantedCodec = Form.Opts.Codec;
+        var wantedAudio = Form.Opts.AudioCodec;
+        var wantedContainer = Form.Opts.Container;
+
+        _suppressChanges = true;
+        RebuildCombos();
+        _suppressChanges = false;
+
+        var dropped = Form.Opts.Quality != wantedQuality
+            || Form.Opts.Codec != wantedCodec
+            || Form.Opts.AudioCodec != wantedAudio
+            || Form.Opts.Container != wantedContainer;
+
+        // --- The metadata row ---
+        ProbeTitle.Text = string.IsNullOrEmpty(p.Title) ? "(no title)" : p.Title;
+
+        var bits = new List<string>();
+        if (!string.IsNullOrEmpty(p.Uploader)) bits.Add(p.Uploader);
+        if (p.Duration > 0) bits.Add(Format.Duration(p.Duration));
+        if (p.ViewCount > 0) bits.Add($"{Format.Count(p.ViewCount)} views");
+        if (!string.IsNullOrEmpty(p.UploadDate))
+        {
+            var when = Format.UploadDate(p.UploadDate);
+            if (!string.IsNullOrEmpty(when)) bits.Add(when);
+        }
+        if (p.IsPlaylist)
+            bits.Add($"{p.EntryCount} item{(p.EntryCount == 1 ? "" : "s")}");
+        ProbeMeta.Text = string.Join(" · ", bits);
+
+        ProbeThumb.Source = null;
+        if (!string.IsNullOrEmpty(p.Thumbnail)
+            && Uri.TryCreate(p.Thumbnail, UriKind.Absolute, out var thumbUri))
+        {
+            /* BitmapImage fetches on its own and raises ImageFailed rather
+             * than throwing, so a thumbnail that will not load leaves the rest
+             * of the preview exactly as it was. It is the one part of this
+             * allowed to be absent. */
+            ProbeThumb.Source = new BitmapImage(thumbUri);
+        }
+        ProbeMetaPanel.Visibility = Visibility.Visible;
+
+        // --- The note: everything the user should not have to infer ---
+        var note = new List<string>();
+        if (dropped)
+        {
+            note.Add("Some of what was selected is not offered for this URL, "
+                + "so those rows moved to what is.");
+        }
+        if (p.FromFallback)
+        {
+            note.Add("Read with yt-dlp directly: the installed pipeline "
+                + "predates `ytdl --probe`, so the PO token provider was not "
+                + "used and the list may be short.");
+        }
+        else if (!p.PotHealthy && !string.IsNullOrEmpty(p.PotNote))
+        {
+            note.Add(p.PotNote);
+        }
+        if (!string.IsNullOrEmpty(p.FormatsFromId))
+        {
+            /* Named rather than presented as the playlist's own, because a
+             * channel can serve 4K AV1 for a recent upload and 360p AVC for
+             * one from 2011. */
+            var which = string.IsNullOrEmpty(p.FormatsFromTitle)
+                ? p.FormatsFromId
+                : p.FormatsFromTitle;
+            note.Add($"Formats shown are for \"{which}\".");
+        }
+        if (p.AgeLimit > 0) note.Add($"Age restricted ({p.AgeLimit}+).");
+        if (p.LiveStatus == "is_live") note.Add("This is live right now.");
+
+        ProbeNote.Text = string.Join(" ", note);
+        ProbeNote.Visibility = note.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        FillFormatsList(p);
+        FillEntriesList(p);
+        UpdatePreview();
+    }
+
+    private void FillFormatsList(Probe p)
+    {
+        FormatsList.Items.Clear();
+        foreach (var f in p.Formats)
+        {
+            var detail = new List<string> { string.IsNullOrEmpty(f.FormatId) ? "?" : f.FormatId };
+            if (f.HasVideoStream) detail.Add(f.VCodec);
+            if (f.HasAudioStream) detail.Add(f.ACodec);
+            if (!string.IsNullOrEmpty(f.Ext)) detail.Add(f.Ext);
+            /* An exact size and an estimate are shown differently on purpose:
+             * the tilde is the difference between a fact and yt-dlp's
+             * tbr*duration guess, and presenting the guess as a fact is how a
+             * 4 GB download surprises someone. */
+            if (f.Filesize > 0) detail.Add(Format.Bytes(f.Filesize));
+            else if (f.FilesizeApprox > 0) detail.Add("~" + Format.Bytes(f.FilesizeApprox));
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            row.Children.Add(new TextBlock
+            {
+                Text = f.Height > 0 ? $"{f.Height}p" : "Audio",
+                Width = 64,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = string.Join(" · ", detail),
+                Style = Controls.Resource<Style>("CaptionSecondary"),
+            });
+            FormatsList.Items.Add(row);
+        }
+
+        FormatsHeader.Text =
+            $"Formats — {p.Formats.Count} rendition{(p.Formats.Count == 1 ? "" : "s")} "
+            + "this video actually has";
+        FormatsExpander.Visibility =
+            p.Formats.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void FillEntriesList(Probe p)
+    {
+        _entryChecks.Clear();
+        EntriesList.Items.Clear();
+
+        if (p.Entries.Count == 0)
+        {
+            EntriesExpander.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var shown = Math.Min(p.Entries.Count, MaxEntryRows);
+        for (var i = 0; i < shown; i++)
+        {
+            var e = p.Entries[i];
+            var detail = new List<string>();
+            if (e.Duration > 0) detail.Add(Format.Duration(e.Duration));
+            if (!string.IsNullOrEmpty(e.VideoId)) detail.Add(e.VideoId);
+
+            var content = new StackPanel { Spacing = 1 };
+            content.Children.Add(new TextBlock
+            {
+                Text = $"{e.Index}. {(string.IsNullOrEmpty(e.Title) ? "(untitled)" : e.Title)}",
+                TextWrapping = TextWrapping.NoWrap,
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = string.Join(" · ", detail),
+                Style = Controls.Resource<Style>("CaptionSecondary"),
+            });
+
+            var check = new CheckBox
+            {
+                Content = content,
+                IsChecked = true,
+                /* The PLAYLIST position, carried on the control rather than
+                 * recomputed from the row's place in the list: the list is
+                 * truncated, and a position derived from the visible order
+                 * queues the wrong videos -- a bug whose first symptom is a
+                 * successful download of something nobody asked for. */
+                Tag = e.Index,
+            };
+            check.Checked += OnEntryToggled;
+            check.Unchecked += OnEntryToggled;
+            EntriesList.Items.Add(check);
+            _entryChecks.Add(check);
+        }
+
+        var header = $"Playlist items — {p.EntryCount} item{(p.EntryCount == 1 ? "" : "s")}";
+        if (p.PlaylistCount > p.EntryCount) header += $" of {p.PlaylistCount}";
+        if (shown < p.Entries.Count) header += $" · first {shown} shown";
+        if (p.EntriesTruncated)
+        {
+            /* Said out loud, because a silently short list of a 4,000-upload
+             * channel reads as a complete one. */
+            header += " · the listing was cut short; use the range field to reach the rest";
+        }
+        EntriesHeader.Text = header;
+        EntriesExpander.Visibility = Visibility.Visible;
+
+        SyncChecksFromItems();
+    }
+
+    private void OnEntryToggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        WriteItemsFromChecks();
+    }
+
+    private void OnSelectAllItems(object sender, RoutedEventArgs e) => SetAllItems(true);
+
+    private void OnSelectNoItems(object sender, RoutedEventArgs e) => SetAllItems(false);
+
+    private void SetAllItems(bool on)
+    {
+        _suppressChanges = true;
+        foreach (var c in _entryChecks) c.IsChecked = on;
+        _suppressChanges = false;
+        WriteItemsFromChecks();
+    }
+
+    /* Turn the ticked rows into an --items value.
+     *
+     * The empty string is a meaningful answer and not a failure to produce
+     * one: ytdl with no --items takes the whole listing, which is what
+     * "everything is ticked" means. Writing out "1-200" instead would silently
+     * CAP a 4,000-video channel at the entries this window happened to
+     * enumerate -- the run would succeed and quietly archive a twentieth of
+     * what was asked for. So a full selection only collapses to "" when the
+     * list is known to be complete. */
+    private void WriteItemsFromChecks()
+    {
+        if (_entryChecks.Count == 0) return;
+
+        var picked = new List<int>();
+        var all = true;
+        foreach (var c in _entryChecks)
+        {
+            var index = c.Tag is int i ? i : 0;
+            if (c.IsChecked == true) picked.Add(index);
+            else all = false;
+        }
+
+        var complete = all
+            && _probe != null
+            && !_probe.EntriesTruncated
+            && _entryChecks.Count == _probe.Entries.Count;
+
+        var spec = complete ? "" : ItemsRange.Compact(picked);
+
+        _writingItems = true;
+        _suppressChanges = true;
+        ItemsBox.Text = spec;
+        _suppressChanges = false;
+        _writingItems = false;
+
+        Form.Opts.Items = spec;
+        UpdatePreview();
+    }
+
+    /// The reverse: a range typed, or restored from a profile, re-ticks the
+    /// rows, so the two halves of the same statement cannot disagree on screen.
+    private void SyncChecksFromItems()
+    {
+        if (_entryChecks.Count == 0) return;
+
+        var spec = ItemsBox.Text?.Trim() ?? "";
+        var empty = spec.Length == 0;
+        var want = new HashSet<int>(ItemsRange.Parse(spec));
+
+        _suppressChanges = true;
+        foreach (var c in _entryChecks)
+        {
+            var index = c.Tag is int i ? i : 0;
+            c.IsChecked = empty || want.Contains(index);
+        }
+        _suppressChanges = false;
     }
 
     // MARK: - Actions

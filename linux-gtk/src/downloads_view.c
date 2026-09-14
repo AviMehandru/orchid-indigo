@@ -2,9 +2,17 @@
 
 #include "paths.h"
 #include "profiles.h"
+#include "url_probe.h"
 
 #include <adwaita.h>
 #include <string.h>
+
+/* How many playlist entries get a tick row before the list is summarised
+ * instead. A GtkListBox builds every child eagerly, so a 500-entry channel is
+ * 500 widgets constructed on the main thread the moment the expander opens --
+ * which is a visible stall, for a list nobody scrolls to the bottom of. Past
+ * this the range field stays the way to say what you want. */
+#define MAX_ENTRY_ROWS 200
 
 #define MAX_LOG_LINES_SHOWN 4000
 
@@ -17,7 +25,37 @@ struct _YtdlDownloadsView
 
   GtkWidget *url;
   GtkWidget *dest;
+  GtkWidget *items;
   GtkWidget *preview;
+
+  /* The URL preview.
+   *
+   * The form used to know nothing about the URL in it until the run failed:
+   * the Quality list was a fixed ladder, asking for 1440p AV1 was a request
+   * that silently resolved to something else, and a typo'd URL was discovered
+   * by a failed row in the history list. Everything below exists to answer
+   * the question before Start rather than after. */
+  YtdlUrlProbe *probe;         /* NULL until one has come back */
+  GCancellable *probe_cancel;  /* non-NULL only while one is in flight */
+  GtkWidget    *probe_button;
+  GtkWidget    *probe_group;
+  GtkWidget    *probe_status;
+  GtkWidget    *probe_spinner;
+  GtkWidget    *probe_meta;
+  GtkWidget    *probe_thumb;
+  GtkWidget    *probe_note;
+  GtkWidget    *probe_formats;
+  GtkWidget    *probe_entries;
+  /* AdwExpanderRow can add and remove rows and cannot list them, so what was
+   * put into each of the two expanders is remembered here to be taken out
+   * again on the next probe. */
+  GPtrArray    *format_rows;  /* GtkWidget* */
+  GPtrArray    *entry_rows;   /* GtkWidget* */
+  GPtrArray    *entry_checks; /* GtkWidget*, one per row above */
+  /* Set while the form is being rewritten from a probe, so the rebuild of one
+   * combo's model does not reenter through its own notify::selected and
+   * rebuild the others underneath itself. */
+  gboolean      applying_probe;
 
   GtkWidget *mode, *quality, *codec, *audio_codec, *container;
   GtkWidget *workers;
@@ -92,6 +130,54 @@ combo_set_value (GtkWidget *w, const char *id)
       }
 }
 
+/* Replace a combo's contents with a new set.
+ *
+ * The id array a combo carries starts out as one of the static tables in the
+ * constructor and is REPLACED here by an owned copy when a probe rebuilds the
+ * row from what the video actually offers. g_object_set_data_full frees the
+ * previous owned array when the next one lands; the original static table has
+ * no destroy notify, so it is never passed to g_free. Both are read through
+ * the same const pointer in combo_value, which is why nothing there has to
+ * know which kind it is holding.
+ *
+ * @keep is the value to reselect if the new set still contains it. When it
+ * does not -- 1440p on a video that turned out to be 1080p at best -- the
+ * first entry is selected instead and the caller says so in the note row,
+ * rather than leaving a selection that reads as honoured and is not. */
+static void
+combo_rebuild (GtkWidget *w, const char *const *ids, const char *const *labels,
+               const char *keep)
+{
+  g_autoptr (GtkStringList) model = gtk_string_list_new (labels);
+  adw_combo_row_set_model (ADW_COMBO_ROW (w), G_LIST_MODEL (model));
+  g_object_set_data_full (G_OBJECT (w), "ytdl-ids", g_strdupv ((GStrv) ids),
+                          (GDestroyNotify) g_strfreev);
+
+  guint selected = 0;
+  for (gsize i = 0; ids[i] != NULL; i++)
+    if (g_strcmp0 (ids[i], keep) == 0)
+      {
+        selected = (guint) i;
+        break;
+      }
+  adw_combo_row_set_selected (ADW_COMBO_ROW (w), selected);
+}
+
+/* Put back the full static list this row was built with. Called when the
+ * preview is cleared, because a dropdown describing the previous URL is worse
+ * than one describing no URL at all. */
+static void
+combo_restore_default (GtkWidget *w)
+{
+  const char *const *ids = g_object_get_data (G_OBJECT (w), "ytdl-ids-default");
+  const char *const *labels =
+      g_object_get_data (G_OBJECT (w), "ytdl-labels-default");
+  if (ids == NULL || labels == NULL)
+    return;
+  g_autofree char *keep = g_strdup (combo_value (w));
+  combo_rebuild (w, ids, labels, keep);
+}
+
 static YtdlRunOptions *
 collect (YtdlDownloadsView *self)
 {
@@ -99,6 +185,7 @@ collect (YtdlDownloadsView *self)
 
   o->url = g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->url)));
   o->data_root = g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->dest)));
+  o->items = g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->items)));
 
   o->mode = g_strdup (combo_value (self->mode));
   o->quality = g_strdup (combo_value (self->quality));
@@ -165,12 +252,727 @@ on_form_changed (GtkWidget *w, gpointer user_data)
   refresh_preview (user_data);
 }
 
+static void rebuild_quality_for_codec (YtdlDownloadsView *self);
+
 /* GtkDropDown reports selection through a property notification rather than a
  * "changed" signal, so it needs the three-argument shape. */
 static void
 on_notify_changed (GObject *obj, GParamSpec *pspec, gpointer user_data)
 {
-  refresh_preview (user_data);
+  YtdlDownloadsView *self = user_data;
+
+  /* Changing the codec changes which heights are reachable: 1440p is commonly
+   * published only in VP9, so a Quality list built from the union of every
+   * height offers a combination this video does not have -- the same silent
+   * wrong answer the static ladder gave, with better-looking numbers in it. */
+  if (!self->applying_probe && self->probe != NULL
+      && obj == G_OBJECT (self->codec))
+    rebuild_quality_for_codec (self);
+
+  refresh_preview (self);
+}
+
+/* ---------------------------------------------------------------------- */
+/* The URL preview                                                        */
+/* ---------------------------------------------------------------------- */
+
+static char *
+human_duration (double seconds)
+{
+  if (seconds <= 0.0)
+    return g_strdup ("");
+  int total = (int) (seconds + 0.5);
+  int h = total / 3600;
+  int m = (total % 3600) / 60;
+  int s = total % 60;
+  if (h > 0)
+    return g_strdup_printf ("%d:%02d:%02d", h, m, s);
+  return g_strdup_printf ("%d:%02d", m, s);
+}
+
+/* yt-dlp's upload_date is YYYYMMDD with no separators, which reads as a serial
+ * number rather than a date. Reformatted by slicing rather than by parsing
+ * into a GDateTime: there is no timezone to get right here, and a date that
+ * fails to parse should come out blank rather than as 1970. */
+static char *
+human_date (const char *yyyymmdd)
+{
+  if (yyyymmdd == NULL || strlen (yyyymmdd) != 8)
+    return g_strdup ("");
+  for (int i = 0; i < 8; i++)
+    if (!g_ascii_isdigit (yyyymmdd[i]))
+      return g_strdup ("");
+  return g_strdup_printf ("%.4s-%.2s-%.2s", yyyymmdd, yyyymmdd + 4,
+                          yyyymmdd + 6);
+}
+
+static char *
+human_count (gint64 n)
+{
+  if (n <= 0)
+    return g_strdup ("");
+  if (n >= 1000000)
+    return g_strdup_printf ("%.1fM", (double) n / 1000000.0);
+  if (n >= 1000)
+    return g_strdup_printf ("%.1fK", (double) n / 1000.0);
+  return g_strdup_printf ("%" G_GINT64_FORMAT, n);
+}
+
+static char *
+human_size (gint64 bytes)
+{
+  if (bytes <= 0)
+    return g_strdup ("");
+  return g_format_size ((guint64) bytes);
+}
+
+/* AdwExpanderRow has add_row and remove, and no way to enumerate or clear what
+ * it holds -- so the rows added to one have to be remembered to be taken back
+ * out. Both preview expanders are rebuilt from scratch on every probe, and
+ * without this the second probe of a session shows the first one's formats
+ * underneath its own. */
+static void
+drop_expander_rows (GtkWidget *expander, GPtrArray *rows)
+{
+  if (rows == NULL)
+    return;
+  for (guint i = 0; i < rows->len; i++)
+    adw_expander_row_remove (ADW_EXPANDER_ROW (expander),
+                             g_ptr_array_index (rows, i));
+  g_ptr_array_set_size (rows, 0);
+}
+
+static void
+clear_entry_rows (YtdlDownloadsView *self)
+{
+  drop_expander_rows (self->probe_entries, self->entry_rows);
+  if (self->entry_checks != NULL)
+    g_ptr_array_set_size (self->entry_checks, 0);
+}
+
+/* Everything the preview put on screen goes away, and every dropdown goes
+ * back to its full static list.
+ *
+ * Called when the URL changes, which is the important case: a Quality row
+ * still showing the heights of the PREVIOUS video, against a URL that has
+ * been replaced, is worse than one showing the generic ladder -- it looks
+ * like knowledge and is not. */
+static void
+clear_probe (YtdlDownloadsView *self)
+{
+  if (self->probe_cancel != NULL)
+    {
+      g_cancellable_cancel (self->probe_cancel);
+      g_clear_object (&self->probe_cancel);
+    }
+  g_clear_pointer (&self->probe, ytdl_url_probe_free);
+
+  clear_entry_rows (self);
+  gtk_widget_set_visible (self->probe_group, FALSE);
+  gtk_widget_set_visible (self->probe_spinner, FALSE);
+  gtk_widget_set_sensitive (self->probe_button, TRUE);
+  gtk_picture_set_paintable (GTK_PICTURE (self->probe_thumb), NULL);
+
+  self->applying_probe = TRUE;
+  combo_restore_default (self->quality);
+  combo_restore_default (self->codec);
+  combo_restore_default (self->audio_codec);
+  combo_restore_default (self->container);
+  self->applying_probe = FALSE;
+  refresh_preview (self);
+}
+
+static void
+on_url_changed (GtkEditable *editable, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  if (self->probe != NULL || self->probe_cancel != NULL)
+    clear_probe (self);
+  refresh_preview (self);
+}
+
+/* The Quality row, filtered to the heights the currently-selected codec
+ * actually offers. "Best" is always first and is not one of the probed
+ * heights: it is a pipeline concept, always available, and means "no cap". */
+static void
+rebuild_quality_for_codec (YtdlDownloadsView *self)
+{
+  if (self->probe == NULL)
+    return;
+
+  g_autofree char *codec = g_strdup (combo_value (self->codec));
+  g_autoptr (GArray) heights =
+      ytdl_url_probe_heights_for_codec (self->probe, codec);
+
+  g_autoptr (GPtrArray) ids = g_ptr_array_new_with_free_func (g_free);
+  g_autoptr (GPtrArray) labels = g_ptr_array_new_with_free_func (g_free);
+  g_ptr_array_add (ids, g_strdup ("best"));
+  g_ptr_array_add (labels, g_strdup ("Best"));
+  for (guint i = 0; i < heights->len; i++)
+    {
+      int h = g_array_index (heights, int, i);
+      g_ptr_array_add (ids, g_strdup_printf ("%d", h));
+      g_ptr_array_add (labels, g_strdup_printf ("%dp", h));
+    }
+  g_ptr_array_add (ids, NULL);
+  g_ptr_array_add (labels, NULL);
+
+  g_autofree char *keep = g_strdup (combo_value (self->quality));
+  gboolean was_applying = self->applying_probe;
+  self->applying_probe = TRUE;
+  combo_rebuild (self->quality, (const char *const *) ids->pdata,
+                 (const char *const *) labels->pdata, keep);
+  self->applying_probe = was_applying;
+}
+
+static const char *
+video_codec_label (const char *family)
+{
+  if (g_strcmp0 (family, "avc1") == 0)
+    return "AVC1 / H.264";
+  if (g_strcmp0 (family, "vp9") == 0)
+    return "VP9";
+  if (g_strcmp0 (family, "av01") == 0)
+    return "AV1";
+  return family;
+}
+
+static const char *
+audio_codec_label (const char *family)
+{
+  if (g_strcmp0 (family, "opus") == 0)
+    return "Opus";
+  if (g_strcmp0 (family, "aac") == 0)
+    return "AAC";
+  if (g_strcmp0 (family, "mp3") == 0)
+    return "MP3";
+  if (g_strcmp0 (family, "flac") == 0)
+    return "FLAC";
+  return family;
+}
+
+static const char *
+container_label (const char *id)
+{
+  if (g_strcmp0 (id, "mkv") == 0)
+    return "MKV";
+  if (g_strcmp0 (id, "mp4") == 0)
+    return "MP4";
+  if (g_strcmp0 (id, "webm") == 0)
+    return "WebM";
+  return id;
+}
+
+/* Rebuild a codec-ish row from a list of families, with "Any" pinned first.
+ * Returns TRUE when the value that was selected before survived. */
+static gboolean
+rebuild_family_combo (YtdlDownloadsView *self, GtkWidget *row, GStrv families,
+                      const char *(*label_of) (const char *),
+                      gboolean include_any)
+{
+  g_autoptr (GPtrArray) ids = g_ptr_array_new_with_free_func (g_free);
+  g_autoptr (GPtrArray) labels = g_ptr_array_new_with_free_func (g_free);
+  if (include_any)
+    {
+      g_ptr_array_add (ids, g_strdup ("any"));
+      g_ptr_array_add (labels, g_strdup ("Any"));
+    }
+  for (gsize i = 0; families != NULL && families[i] != NULL; i++)
+    {
+      g_ptr_array_add (ids, g_strdup (families[i]));
+      g_ptr_array_add (labels, g_strdup (label_of (families[i])));
+    }
+  /* A probe that came back with nothing usable must not leave an EMPTY row:
+   * an AdwComboRow with no model shows a blank control that cannot be opened,
+   * which reads as a broken widget rather than as "this video has none of
+   * these". The pipeline's own always-available value goes in instead. */
+  if (ids->len == 0)
+    {
+      g_ptr_array_add (ids, g_strdup (include_any ? "any" : "mkv"));
+      g_ptr_array_add (labels, g_strdup (include_any ? "Any" : "MKV"));
+    }
+  g_ptr_array_add (ids, NULL);
+  g_ptr_array_add (labels, NULL);
+
+  g_autofree char *keep = g_strdup (combo_value (row));
+  gboolean survived =
+      g_strv_contains ((const char *const *) ids->pdata, keep);
+  combo_rebuild (row, (const char *const *) ids->pdata,
+                 (const char *const *) labels->pdata, keep);
+  return survived;
+}
+
+static void
+fill_format_rows (YtdlDownloadsView *self)
+{
+  const YtdlUrlProbe *p = self->probe;
+  drop_expander_rows (self->probe_formats, self->format_rows);
+
+  gsize shown = 0;
+  for (guint i = 0; i < p->formats->len; i++)
+    {
+      const YtdlUrlProbeFormat *f = g_ptr_array_index (p->formats, i);
+      GtkWidget *row = adw_action_row_new ();
+
+      g_autofree char *title = NULL;
+      if (f->height > 0)
+        title = g_strdup_printf ("%dp%s%s", f->height,
+                                 f->fps >= 50.0 ? " " : "",
+                                 f->fps >= 50.0 ? "high frame rate" : "");
+      else
+        title = g_strdup ("Audio");
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+
+      GString *sub = g_string_new (NULL);
+      g_string_append_printf (sub, "%s", f->format_id != NULL ? f->format_id : "?");
+      if (f->vcodec != NULL && g_strcmp0 (f->vcodec, "none") != 0)
+        g_string_append_printf (sub, " · %s", f->vcodec);
+      if (f->acodec != NULL && g_strcmp0 (f->acodec, "none") != 0)
+        g_string_append_printf (sub, " · %s", f->acodec);
+      if (f->ext != NULL)
+        g_string_append_printf (sub, " · %s", f->ext);
+      /* An exact size and an estimate are shown differently on purpose: the
+       * tilde is the difference between a fact and yt-dlp's tbr*duration
+       * guess, and presenting the guess as a fact is how a 4 GB download
+       * surprises someone. */
+      if (f->filesize > 0)
+        {
+          g_autofree char *sz = human_size (f->filesize);
+          g_string_append_printf (sub, " · %s", sz);
+        }
+      else if (f->filesize_approx > 0)
+        {
+          g_autofree char *sz = human_size (f->filesize_approx);
+          g_string_append_printf (sub, " · ~%s", sz);
+        }
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), sub->str);
+      g_string_free (sub, TRUE);
+
+      adw_expander_row_add_row (ADW_EXPANDER_ROW (self->probe_formats), row);
+      g_ptr_array_add (self->format_rows, row);
+      shown++;
+    }
+
+  g_autofree char *sub = g_strdup_printf (
+      "%" G_GSIZE_FORMAT " rendition%s this video actually has", shown,
+      shown == 1 ? "" : "s");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (self->probe_formats), sub);
+  gtk_widget_set_visible (self->probe_formats, shown > 0);
+}
+
+static void write_items_from_checks (YtdlDownloadsView *self);
+
+static void
+on_entry_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  write_items_from_checks (user_data);
+}
+
+/* Turn the ticked rows into a --items value.
+ *
+ * The empty string is a meaningful answer and not a failure to produce one:
+ * ytdl with no --items takes the whole listing, which is what "everything is
+ * ticked" means. Writing out "1-200" instead would silently CAP a 4,000-video
+ * channel at the 200 entries this window happened to enumerate -- the run
+ * would succeed and quietly archive a twentieth of what was asked for. So a
+ * full selection only collapses to "" when the list is known to be complete. */
+static void
+write_items_from_checks (YtdlDownloadsView *self)
+{
+  if (self->entry_checks == NULL || self->entry_checks->len == 0)
+    return;
+
+  g_autoptr (GArray) picked = g_array_new (FALSE, FALSE, sizeof (int));
+  gboolean all = TRUE;
+  for (guint i = 0; i < self->entry_checks->len; i++)
+    {
+      GtkWidget *c = g_ptr_array_index (self->entry_checks, i);
+      int idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (c), "ytdl-index"));
+      if (gtk_check_button_get_active (GTK_CHECK_BUTTON (c)))
+        g_array_append_val (picked, idx);
+      else
+        all = FALSE;
+    }
+
+  gboolean complete =
+      all && self->probe != NULL && !self->probe->entries_truncated
+      && self->entry_checks->len == self->probe->entries->len;
+
+  g_autofree char *spec =
+      complete ? g_strdup ("")
+               : ytdl_url_probe_items_range ((const int *) picked->data,
+                                             picked->len);
+
+  self->applying_probe = TRUE;
+  gtk_editable_set_text (GTK_EDITABLE (self->items), spec);
+  self->applying_probe = FALSE;
+  refresh_preview (self);
+}
+
+/* The reverse: a range typed (or restored from a profile) re-ticks the rows,
+ * so the two halves of the same statement cannot disagree on screen. */
+static void
+sync_checks_from_items (YtdlDownloadsView *self)
+{
+  if (self->entry_checks == NULL || self->entry_checks->len == 0)
+    return;
+
+  const char *spec = gtk_editable_get_text (GTK_EDITABLE (self->items));
+  gboolean empty = spec == NULL || *spec == '\0';
+  g_autoptr (GArray) want = ytdl_url_probe_parse_items_range (spec);
+
+  self->applying_probe = TRUE;
+  for (guint i = 0; i < self->entry_checks->len; i++)
+    {
+      GtkWidget *c = g_ptr_array_index (self->entry_checks, i);
+      int idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (c), "ytdl-index"));
+      gboolean on = empty;
+      for (guint j = 0; !on && j < want->len; j++)
+        on = g_array_index (want, int, j) == idx;
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (c), on);
+    }
+  self->applying_probe = FALSE;
+}
+
+static void
+on_items_changed (GtkEditable *editable, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  /* applying_probe is set while write_items_from_checks is the one editing,
+   * which is what keeps ticking a box from immediately re-deriving the boxes
+   * from the text it just wrote. */
+  if (!self->applying_probe)
+    sync_checks_from_items (self);
+  refresh_preview (self);
+}
+
+static void
+on_select_all (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  gboolean on = g_object_get_data (G_OBJECT (btn), "ytdl-select-all") != NULL;
+  self->applying_probe = TRUE;
+  for (guint i = 0; i < self->entry_checks->len; i++)
+    gtk_check_button_set_active (
+        GTK_CHECK_BUTTON (g_ptr_array_index (self->entry_checks, i)), on);
+  self->applying_probe = FALSE;
+  write_items_from_checks (self);
+}
+
+static void
+fill_entry_rows (YtdlDownloadsView *self)
+{
+  const YtdlUrlProbe *p = self->probe;
+  clear_entry_rows (self);
+
+  if (p == NULL || p->entries->len == 0)
+    {
+      gtk_widget_set_visible (self->probe_entries, FALSE);
+      return;
+    }
+
+  guint shown = MIN (p->entries->len, (guint) MAX_ENTRY_ROWS);
+  for (guint i = 0; i < shown; i++)
+    {
+      const YtdlUrlProbeEntry *e = g_ptr_array_index (p->entries, i);
+
+      GtkWidget *row = adw_action_row_new ();
+      g_autofree char *title =
+          g_strdup_printf ("%d. %s", e->index,
+                           e->title != NULL ? e->title : "(untitled)");
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+
+      GString *sub = g_string_new (NULL);
+      if (e->duration > 0.0)
+        {
+          g_autofree char *d = human_duration (e->duration);
+          g_string_append (sub, d);
+        }
+      if (e->id != NULL)
+        g_string_append_printf (sub, "%s%s", sub->len > 0 ? " · " : "", e->id);
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), sub->str);
+      g_string_free (sub, TRUE);
+
+      GtkWidget *check = gtk_check_button_new ();
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (check), TRUE);
+      gtk_widget_set_valign (check, GTK_ALIGN_CENTER);
+      /* The PLAYLIST position, carried on the widget rather than recomputed
+       * from the row's place in the list: the list is filtered and truncated,
+       * and a position derived from the visible order queues the wrong
+       * videos -- a bug whose first symptom is a successful download of
+       * something nobody asked for. */
+      g_object_set_data (G_OBJECT (check), "ytdl-index",
+                         GINT_TO_POINTER (e->index));
+      g_signal_connect (check, "toggled", G_CALLBACK (on_entry_toggled), self);
+      adw_action_row_add_prefix (ADW_ACTION_ROW (row), check);
+      adw_action_row_set_activatable_widget (ADW_ACTION_ROW (row), check);
+
+      adw_expander_row_add_row (ADW_EXPANDER_ROW (self->probe_entries), row);
+      g_ptr_array_add (self->entry_rows, row);
+      g_ptr_array_add (self->entry_checks, check);
+    }
+
+  GString *sub = g_string_new (NULL);
+  g_string_append_printf (sub, "%u item%s", p->entry_count,
+                          p->entry_count == 1 ? "" : "s");
+  if (p->playlist_count > 0 && p->playlist_count > p->entry_count)
+    g_string_append_printf (sub, " of %d", p->playlist_count);
+  if (shown < p->entries->len)
+    g_string_append_printf (sub, " · first %u shown", shown);
+  if (p->entries_truncated)
+    /* Said out loud, because a silently short list of a 4,000-upload channel
+     * reads as a complete one. */
+    g_string_append (sub, " · the listing was cut short; use the range field "
+                          "to reach the rest");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (self->probe_entries), sub->str);
+  g_string_free (sub, TRUE);
+
+  gtk_widget_set_visible (self->probe_entries, TRUE);
+  sync_checks_from_items (self);
+}
+
+static void
+on_thumbnail_loaded (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  g_autoptr (YtdlDownloadsView) self = user_data;
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GBytes) bytes =
+      g_file_load_bytes_finish (G_FILE (source), res, NULL, &error);
+  if (bytes == NULL)
+    return;
+
+  g_autoptr (GdkTexture) tex = gdk_texture_new_from_bytes (bytes, &error);
+  if (tex == NULL)
+    return;
+  gtk_picture_set_paintable (GTK_PICTURE (self->probe_thumb),
+                             GDK_PAINTABLE (tex));
+  gtk_widget_set_visible (self->probe_thumb, TRUE);
+}
+
+/* Fetched through GIO rather than by adding an HTTP library.
+ *
+ * That is a real trade: g_file_load_bytes on an https:// URI needs a GIO
+ * backend for it, which a minimal container or a system without gvfs does not
+ * have. The alternative was a fourth dependency in a project whose whole
+ * argument is three system libraries and no bundled runtime. So the thumbnail
+ * is the one part of the preview allowed to be absent: it fails silently, the
+ * title, duration, uploader and format table are all still there, and nothing
+ * else in the window changes. Degrading honestly, rather than pretending. */
+static void
+load_thumbnail (YtdlDownloadsView *self, const char *uri)
+{
+  gtk_picture_set_paintable (GTK_PICTURE (self->probe_thumb), NULL);
+  gtk_widget_set_visible (self->probe_thumb, FALSE);
+  if (uri == NULL || !g_str_has_prefix (uri, "http"))
+    return;
+
+  g_autoptr (GFile) f = g_file_new_for_uri (uri);
+  g_file_load_bytes_async (f, self->probe_cancel, on_thumbnail_loaded,
+                           g_object_ref (self));
+}
+
+/* Everything the probe knows, written into the form and onto the screen. */
+static void
+apply_probe (YtdlDownloadsView *self)
+{
+  const YtdlUrlProbe *p = self->probe;
+  g_return_if_fail (p != NULL);
+
+  self->applying_probe = TRUE;
+
+  gboolean codec_kept = rebuild_family_combo (self, self->codec,
+                                              p->video_codecs,
+                                              video_codec_label, TRUE);
+  gboolean audio_kept = rebuild_family_combo (self, self->audio_codec,
+                                              p->audio_codecs,
+                                              audio_codec_label, TRUE);
+  gboolean container_kept = rebuild_family_combo (self, self->container,
+                                                  p->containers,
+                                                  container_label, FALSE);
+  g_autofree char *wanted_height = g_strdup (combo_value (self->quality));
+  rebuild_quality_for_codec (self);
+  gboolean quality_kept =
+      g_strcmp0 (combo_value (self->quality), wanted_height) == 0;
+
+  self->applying_probe = FALSE;
+
+  /* --- The metadata row --- */
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_meta),
+                                 p->title != NULL ? p->title : "(no title)");
+
+  GString *meta = g_string_new (NULL);
+  if (p->uploader != NULL)
+    g_string_append (meta, p->uploader);
+  if (p->duration > 0.0)
+    {
+      g_autofree char *d = human_duration (p->duration);
+      g_string_append_printf (meta, "%s%s", meta->len > 0 ? " · " : "", d);
+    }
+  if (p->view_count > 0)
+    {
+      g_autofree char *v = human_count (p->view_count);
+      g_string_append_printf (meta, "%s%s views", meta->len > 0 ? " · " : "",
+                              v);
+    }
+  if (p->upload_date != NULL)
+    {
+      g_autofree char *d = human_date (p->upload_date);
+      if (*d != '\0')
+        g_string_append_printf (meta, "%s%s", meta->len > 0 ? " · " : "", d);
+    }
+  if (g_strcmp0 (p->kind, "playlist") == 0)
+    g_string_append_printf (meta, "%s%d item%s", meta->len > 0 ? " · " : "",
+                            p->entry_count, p->entry_count == 1 ? "" : "s");
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (self->probe_meta), meta->str);
+  g_string_free (meta, TRUE);
+
+  load_thumbnail (self, p->thumbnail);
+
+  /* --- The note row: everything the user should not have to infer --- */
+  GString *note = g_string_new (NULL);
+  if (!quality_kept || !codec_kept || !audio_kept || !container_kept)
+    g_string_append (
+        note,
+        "Some of what was selected is not offered for this URL, so those rows "
+        "moved to what is. ");
+  if (p->from_fallback)
+    g_string_append (note,
+                     "Read with yt-dlp directly: the installed pipeline "
+                     "predates `ytdl --probe`, so the PO token provider was "
+                     "not used and the list may be short. ");
+  else if (!p->pot_healthy && p->pot_note != NULL)
+    g_string_append_printf (note, "%s ", p->pot_note);
+  if (p->formats_from_id != NULL)
+    /* Named rather than presented as the playlist's own, because a channel
+     * can serve 4K AV1 for a recent upload and 360p AVC for one from 2011. */
+    g_string_append_printf (note, "Formats shown are for \"%s\". ",
+                            p->formats_from_title != NULL
+                                ? p->formats_from_title
+                                : p->formats_from_id);
+  if (p->age_limit > 0)
+    g_string_append_printf (note, "Age restricted (%d+). ", p->age_limit);
+  if (p->live_status != NULL && g_strcmp0 (p->live_status, "is_live") == 0)
+    g_string_append (note, "This is live right now. ");
+
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (self->probe_note), note->str);
+  gtk_widget_set_visible (self->probe_note, note->len > 0);
+  g_string_free (note, TRUE);
+
+  fill_format_rows (self);
+  fill_entry_rows (self);
+
+  gtk_widget_set_visible (self->probe_group, TRUE);
+  refresh_preview (self);
+}
+
+static void
+set_probe_status (YtdlDownloadsView *self, const char *text, gboolean bad)
+{
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_status),
+                                 text != NULL ? text : "");
+  gtk_widget_remove_css_class (self->probe_status, "error");
+  if (bad)
+    gtk_widget_add_css_class (self->probe_status, "error");
+  gtk_widget_set_visible (self->probe_status, text != NULL && *text != '\0');
+}
+
+static void
+on_probe_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  g_autoptr (YtdlDownloadsView) self = user_data;
+  g_autoptr (GError) error = NULL;
+
+  YtdlUrlProbe *p = ytdl_url_probe_run_finish (res, &error);
+
+  gtk_widget_set_visible (self->probe_spinner, FALSE);
+  gtk_widget_set_sensitive (self->probe_button, TRUE);
+  g_clear_object (&self->probe_cancel);
+
+  if (p == NULL)
+    {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        {
+          set_probe_status (self, "", FALSE);
+          return;
+        }
+      /* The message is yt-dlp's or ytdl.ps1's own sentence -- "Video
+       * unavailable", "Sign in to confirm your age" -- not one invented
+       * here, because theirs says what to do about it. */
+      set_probe_status (self, error->message, TRUE);
+      gtk_widget_set_visible (self->probe_group, TRUE);
+      gtk_widget_set_visible (self->probe_meta, FALSE);
+      return;
+    }
+
+  g_clear_pointer (&self->probe, ytdl_url_probe_free);
+  self->probe = p;
+
+  if (p->probe_version > YTDL_SUPPORTED_URL_PROBE_VERSION)
+    /* Said, not guessed around. The contract's rule is that fields are added
+     * and never redefined, so a newer document is still readable -- but the
+     * one thing this app must not do is present a partial reading of it as a
+     * complete one. */
+    set_probe_status (self,
+                      "This pipeline's probe is newer than this app knows "
+                      "about; some of what it reported is not shown.", FALSE);
+  else
+    set_probe_status (self, "", FALSE);
+
+  gtk_widget_set_visible (self->probe_meta, TRUE);
+  apply_probe (self);
+}
+
+static void
+on_probe_clicked (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+
+  /* A second click while one is running cancels it rather than starting a
+   * race between two answers for the same field. */
+  if (self->probe_cancel != NULL)
+    {
+      g_cancellable_cancel (self->probe_cancel);
+      g_clear_object (&self->probe_cancel);
+      gtk_widget_set_visible (self->probe_spinner, FALSE);
+      gtk_widget_set_sensitive (self->probe_button, TRUE);
+      set_probe_status (self, "", FALSE);
+      return;
+    }
+
+  const char *url = gtk_editable_get_text (GTK_EDITABLE (self->url));
+  if (url == NULL || *url == '\0')
+    {
+      set_probe_status (self, "Paste a URL first.", TRUE);
+      gtk_widget_set_visible (self->probe_group, TRUE);
+      gtk_widget_set_visible (self->probe_meta, FALSE);
+      return;
+    }
+
+  g_auto (GStrv) extra = NULL;
+  {
+    /* The same one-argument-per-line reading collect() does, so a URL that
+     * needs --cookies-from-browser is probed with it too -- a preview that
+     * fails where the download would succeed is worse than no preview. */
+    g_autoptr (YtdlRunOptions) o = collect (self);
+    GPtrArray *v = g_ptr_array_new ();
+    for (guint i = 0; o->ytdlp_args != NULL && i < o->ytdlp_args->len; i++)
+      g_ptr_array_add (v, g_strdup (g_ptr_array_index (o->ytdlp_args, i)));
+    g_ptr_array_add (v, NULL);
+    extra = (GStrv) g_ptr_array_free (v, FALSE);
+  }
+
+  self->probe_cancel = g_cancellable_new ();
+  gtk_widget_set_visible (self->probe_group, TRUE);
+  gtk_widget_set_visible (self->probe_meta, FALSE);
+  gtk_widget_set_visible (self->probe_spinner, TRUE);
+  gtk_widget_set_sensitive (self->probe_button, TRUE);
+  set_probe_status (self, "Reading the URL…", FALSE);
+
+  ytdl_url_probe_run_async (
+      url, gtk_editable_get_text (GTK_EDITABLE (self->items)),
+      adw_switch_row_get_active (ADW_SWITCH_ROW (self->no_pot_cb)), 0,
+      (const char *const *) extra, self->probe_cancel, on_probe_done,
+      g_object_ref (self));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -447,6 +1249,13 @@ apply_profile_options (YtdlDownloadsView *self, const YtdlRunOptions *o)
    * destination the user has set for this session. */
   if (o->data_root != NULL && *o->data_root != '\0')
     gtk_editable_set_text (GTK_EDITABLE (self->dest), o->data_root);
+
+  /* --items, on the other hand, IS applied even when empty: an empty range
+   * means "all of them", which is a real setting rather than an unset one,
+   * and leaving the previous URL's selection in place would silently narrow
+   * the next run. */
+  gtk_editable_set_text (GTK_EDITABLE (self->items),
+                         o->items != NULL ? o->items : "");
 
   GString *extra = g_string_new (NULL);
   if (o->ytdlp_args != NULL)
@@ -916,12 +1725,30 @@ ytdl_downloads_view_init (YtdlDownloadsView *self)
    * second opinion about both. */
   gtk_orientable_set_orientation (GTK_ORIENTABLE (self),
                                   GTK_ORIENTATION_VERTICAL);
+
+  /* Plain arrays of BORROWED widget pointers: the expander owns every row in
+   * them, so a free func here would unparent widgets GTK is still holding. */
+  self->format_rows = g_ptr_array_new ();
+  self->entry_rows = g_ptr_array_new ();
+  self->entry_checks = g_ptr_array_new ();
 }
 
 static void
 ytdl_downloads_view_dispose (GObject *object)
 {
   YtdlDownloadsView *self = YTDL_DOWNLOADS_VIEW (object);
+
+  /* A probe in flight holds a reference to this view and will finish on the
+   * main loop after dispose. Cancelling first is what stops its callback
+   * touching widgets that are on their way out. */
+  if (self->probe_cancel != NULL)
+    g_cancellable_cancel (self->probe_cancel);
+  g_clear_object (&self->probe_cancel);
+  g_clear_pointer (&self->probe, ytdl_url_probe_free);
+  g_clear_pointer (&self->format_rows, g_ptr_array_unref);
+  g_clear_pointer (&self->entry_rows, g_ptr_array_unref);
+  g_clear_pointer (&self->entry_checks, g_ptr_array_unref);
+
   g_clear_pointer (&self->store, ytdl_profile_store_free);
   G_OBJECT_CLASS (ytdl_downloads_view_parent_class)->dispose (object);
 }
@@ -1035,7 +1862,20 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   self->url = adw_entry_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->url),
                                  "Video, playlist or channel URL");
-  g_signal_connect (self->url, "changed", G_CALLBACK (on_form_changed), self);
+  /* on_url_changed rather than on_form_changed: editing the URL invalidates
+   * any preview on screen, and a Quality row still listing the previous
+   * video's heights is worse than one listing the generic ladder, because it
+   * looks like knowledge. */
+  g_signal_connect (self->url, "changed", G_CALLBACK (on_url_changed), self);
+
+  self->probe_button = gtk_button_new_from_icon_name ("edit-find-symbolic");
+  gtk_widget_set_tooltip_text (self->probe_button,
+                               "Read this URL without downloading it");
+  gtk_widget_set_valign (self->probe_button, GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class (self->probe_button, "flat");
+  g_signal_connect (self->probe_button, "clicked",
+                    G_CALLBACK (on_probe_clicked), self);
+  adw_entry_row_add_suffix (ADW_ENTRY_ROW (self->url), self->probe_button);
   adw_preferences_group_add (ADW_PREFERENCES_GROUP (dgroup), self->url);
 
   self->dest = adw_entry_row_new ();
@@ -1053,7 +1893,100 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   g_signal_connect (browse, "clicked", G_CALLBACK (on_browse), self);
   adw_entry_row_add_suffix (ADW_ENTRY_ROW (self->dest), browse);
   adw_preferences_group_add (ADW_PREFERENCES_GROUP (dgroup), self->dest);
+
+  /* --items, which had no control at all before the preview existed -- it was
+   * reachable only by typing yt-dlp's range syntax into the Advanced box as a
+   * passthrough. It stays a text field rather than becoming purely a set of
+   * tick boxes, for two reasons: the open-ended forms ("200-") cannot be
+   * expressed by ticking a list that was truncated, and a range is what a
+   * profile stores. Ticking writes here; typing here re-ticks. */
+  self->items = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->items),
+      "Playlist items — empty means all of them (e.g. 1-20, 5,8,10-15)");
+  g_signal_connect (self->items, "changed", G_CALLBACK (on_items_changed),
+                    self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (dgroup), self->items);
   gtk_box_append (GTK_BOX (form), dgroup);
+
+  /* --- What the URL actually is ------------------------------------- */
+  self->probe_group = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (self->probe_group),
+                                   "Preview");
+  adw_preferences_group_set_description (
+      ADW_PREFERENCES_GROUP (self->probe_group),
+      "Read from the URL without downloading anything. The Quality, codec and "
+      "container rows below are rebuilt from what this video actually has.");
+
+  self->probe_spinner = gtk_spinner_new ();
+  gtk_spinner_start (GTK_SPINNER (self->probe_spinner));
+  gtk_widget_set_valign (self->probe_spinner, GTK_ALIGN_CENTER);
+  adw_preferences_group_set_header_suffix (
+      ADW_PREFERENCES_GROUP (self->probe_group), self->probe_spinner);
+
+  self->probe_status = adw_action_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_status), "");
+  adw_action_row_set_title_lines (ADW_ACTION_ROW (self->probe_status), 0);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->probe_group),
+                             self->probe_status);
+
+  self->probe_meta = adw_action_row_new ();
+  adw_action_row_set_title_lines (ADW_ACTION_ROW (self->probe_meta), 0);
+  adw_action_row_set_subtitle_lines (ADW_ACTION_ROW (self->probe_meta), 0);
+  self->probe_thumb = gtk_picture_new ();
+  /* A fixed box rather than a natural size: thumbnails come back at anything
+   * from 120x90 to 1280x720, and a row that changes height depending on which
+   * one arrived makes the whole group jump. */
+  gtk_widget_set_size_request (self->probe_thumb, 160, 90);
+  gtk_picture_set_content_fit (GTK_PICTURE (self->probe_thumb),
+                               GTK_CONTENT_FIT_COVER);
+  gtk_widget_set_valign (self->probe_thumb, GTK_ALIGN_CENTER);
+  gtk_widget_add_css_class (self->probe_thumb, "card");
+  adw_action_row_add_prefix (ADW_ACTION_ROW (self->probe_meta),
+                             self->probe_thumb);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->probe_group),
+                             self->probe_meta);
+
+  self->probe_note = adw_action_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_note),
+                                 "Worth knowing");
+  adw_action_row_set_subtitle_lines (ADW_ACTION_ROW (self->probe_note), 0);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->probe_group),
+                             self->probe_note);
+
+  self->probe_formats = adw_expander_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_formats),
+                                 "Formats");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->probe_group),
+                             self->probe_formats);
+
+  self->probe_entries = adw_expander_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->probe_entries),
+                                 "Playlist items");
+  {
+    GtkWidget *btns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_valign (btns, GTK_ALIGN_CENTER);
+
+    GtkWidget *all = gtk_button_new_with_label ("All");
+    gtk_widget_add_css_class (all, "flat");
+    g_object_set_data (G_OBJECT (all), "ytdl-select-all", GINT_TO_POINTER (1));
+    g_signal_connect (all, "clicked", G_CALLBACK (on_select_all), self);
+
+    GtkWidget *none = gtk_button_new_with_label ("None");
+    gtk_widget_add_css_class (none, "flat");
+    g_signal_connect (none, "clicked", G_CALLBACK (on_select_all), self);
+
+    gtk_box_append (GTK_BOX (btns), all);
+    gtk_box_append (GTK_BOX (btns), none);
+    adw_expander_row_add_suffix (ADW_EXPANDER_ROW (self->probe_entries), btns);
+  }
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (self->probe_group),
+                             self->probe_entries);
+
+  /* Hidden until there is something to say. An empty Preview group sitting
+   * above the Format group would read as a section that failed to load. */
+  gtk_widget_set_visible (self->probe_group, FALSE);
+  gtk_box_append (GTK_BOX (form), self->probe_group);
 
   /* --- Format -------------------------------------------------------- */
   static const char *const mode_ids[] = { "full", "video-only", "audio-only",
@@ -1086,6 +2019,26 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   self->codec = make_combo (c_ids, c_labels, "Video codec", NULL, "any");
   self->audio_codec = make_combo (a_ids, a_labels, "Audio codec", NULL, "any");
   self->container = make_combo (k_ids, k_labels, "Container", NULL, "mkv");
+
+  /* Keep the static tables reachable after a probe has replaced the live
+   * ones, so clearing the preview can put the full lists back. Stored WITHOUT
+   * a destroy notify, deliberately: these point at the static arrays above,
+   * and registering g_strfreev against them would hand string literals to
+   * free() the first time a probe replaced them. */
+#define KEEP_DEFAULTS(row, ids_, labels_)                                     \
+  do                                                                          \
+    {                                                                         \
+      g_object_set_data (G_OBJECT (row), "ytdl-ids-default", (gpointer) ids_); \
+      g_object_set_data (G_OBJECT (row), "ytdl-labels-default",               \
+                         (gpointer) labels_);                                 \
+    }                                                                         \
+  while (0)
+
+  KEEP_DEFAULTS (self->quality, q_ids, q_labels);
+  KEEP_DEFAULTS (self->codec, c_ids, c_labels);
+  KEEP_DEFAULTS (self->audio_codec, a_ids, a_labels);
+  KEEP_DEFAULTS (self->container, k_ids, k_labels);
+#undef KEEP_DEFAULTS
 
   GtkWidget *fgroup = adw_preferences_group_new ();
   adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (fgroup), "Format");

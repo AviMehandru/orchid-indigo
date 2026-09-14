@@ -61,6 +61,7 @@ core_sources = files(
   'src/paths.c',
   'src/archive.c',
   'src/pipeline.c',
+  'src/url_probe.c',
   'src/health.c',
   'src/settings.c',
   'src/media.c',
@@ -98,7 +99,7 @@ cli_version = meson.project_source_root() / '..' / 'CLI_VERSION'
 
 test_archive = executable('test-archive',
   files('tests/test_archive.c', 'tests/test_pipeline.c', 'tests/test_detail.c',
-        'tests/test_profiles.c', 'tests/test_paths.c'),
+        'tests/test_profiles.c', 'tests/test_paths.c', 'tests/test_url_probe.c'),
   c_args : ['-DYTDL_CLI_VERSION_PATH="' + cli_version + '"'],
   dependencies : deps,
   link_with : core,
