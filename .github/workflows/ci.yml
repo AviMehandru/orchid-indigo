@@ -150,7 +150,7 @@ jobs:
 
       - name: Upload test log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: meson-testlog-${{ matrix.arch }}
           path: linux-gtk/build/meson-logs/testlog.txt
@@ -207,7 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         # 8.0.x because YtdlWin.Tests still targets net8.0-windows and the test
         # host needs that runtime; 10.0.x because that is the SDK to be
         # building with now that .NET 8 leaves support in November 2026. Drop
@@ -223,7 +223,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dotnet-testresults
           path: windows-winui/**/TestResults/*.trx

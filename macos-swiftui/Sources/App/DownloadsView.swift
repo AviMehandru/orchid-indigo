@@ -535,10 +535,10 @@ struct DownloadsView: View {
     private func metadataLine(_ p: UrlProbe) -> String {
         var bits: [String] = []
         if !p.uploader.isEmpty { bits.append(p.uploader) }
-        if p.duration > 0 { bits.append(Formatting.duration(p.duration)) }
-        if p.viewCount > 0 { bits.append("\(Formatting.count(p.viewCount)) views") }
+        if p.duration > 0 { bits.append(Format.duration(p.duration)) }
+        if p.viewCount > 0 { bits.append("\(Format.count(p.viewCount)) views") }
         if !p.uploadDate.isEmpty {
-            let d = Formatting.uploadDate(p.uploadDate)
+            let d = Format.uploadDate(p.uploadDate)
             if !d.isEmpty { bits.append(d) }
         }
         if p.isPlaylist {
@@ -596,9 +596,9 @@ struct DownloadsView: View {
          * guess, and presenting the guess as a fact is how a 4 GB download
          * surprises someone. */
         if f.filesize > 0 {
-            bits.append(Formatting.bytes(UInt64(f.filesize)))
+            bits.append(Format.bytes(UInt64(f.filesize)))
         } else if f.filesizeApprox > 0 {
-            bits.append("~" + Formatting.bytes(UInt64(f.filesizeApprox)))
+            bits.append("~" + Format.bytes(UInt64(f.filesizeApprox)))
         }
         return bits.joined(separator: " · ")
     }
@@ -641,7 +641,7 @@ struct DownloadsView: View {
 
     private func entryDetail(_ e: UrlProbeEntry) -> String {
         var bits: [String] = []
-        if e.duration > 0 { bits.append(Formatting.duration(e.duration)) }
+        if e.duration > 0 { bits.append(Format.duration(e.duration)) }
         if !e.videoID.isEmpty { bits.append(e.videoID) }
         return bits.joined(separator: " · ")
     }

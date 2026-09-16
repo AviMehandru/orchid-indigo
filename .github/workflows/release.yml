@@ -136,7 +136,7 @@ jobs:
 
       - name: Upload test log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: meson-testlog-${{ matrix.arch }}
           path: linux-gtk/build/meson-logs/testlog.txt
@@ -184,7 +184,7 @@ jobs:
           dpkg-deb --info "ytdl-gtk_${VERSION}_${ARCH}.deb"
           dpkg-deb --contents "ytdl-gtk_${VERSION}_${ARCH}.deb"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux-${{ matrix.arch }}
           path: linux-gtk/*.deb
@@ -395,7 +395,7 @@ jobs:
           A user who downloads it will be told the app is damaged, and will need \
           xattr -dr com.apple.quarantine on it."
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: macos-universal
           path: macos-swiftui/dist/*.dmg
@@ -429,7 +429,7 @@ jobs:
             echo "version=${FALLBACK_VERSION}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         # 10 because .NET 8 leaves support on 10 November 2026 and the SDK you
         # build with should already be the one you will still have. 8 as well
         # because YtdlWin.csproj still targets net8.0-windows10.0.19041.0 and
@@ -454,7 +454,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dotnet-testresults-${{ matrix.rid }}
           path: windows-winui/**/TestResults/*.trx
@@ -499,7 +499,7 @@ jobs:
           Compress-Archive -Path "publish\${{ matrix.rid }}\*" `
             -DestinationPath "dist\ytdl-win-$env:VERSION-${{ matrix.rid }}.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows-${{ matrix.rid }}
           path: windows-winui/dist/*.zip
@@ -519,7 +519,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
