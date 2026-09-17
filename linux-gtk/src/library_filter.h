@@ -123,6 +123,18 @@ typedef struct
 
   YtdlFacetFlags flags;
 
+  /* When non-NULL, only videos whose key is in this set pass -- ANDed with
+   * everything else. Borrowed, never owned: it is the result of a
+   * collection-wide comment or transcript search, which this file knows
+   * nothing about and must not, because the filter has to stay free of the
+   * disk and of the search index's build state.
+   *
+   * The caller is also what decides whether a scope's search is a union with
+   * the metadata match ("Everything") or a replacement for it ("Comments").
+   * Expressing that here would mean this struct carrying a second, differently
+   * combined needle, for a choice that belongs to the search control. */
+  GHashTable *key_allow;
+
   YtdlSortKey sort;
   gboolean    descending;
 } YtdlLibraryFilter;
@@ -149,6 +161,14 @@ void     ytdl_library_filter_set_channel (YtdlLibraryFilter *filter,
                                           const char *channel, gboolean on);
 gboolean ytdl_library_filter_has_channel (const YtdlLibraryFilter *filter,
                                           const char *channel);
+
+/* Whether @entry's title, uploader, id or channel contains @needle,
+ * case-folded. The substring search the Library has always had, exposed
+ * because the "Everything" search scope has to union it with the index's hits
+ * and cannot do that from inside ytdl_library_filter_matches. An empty or NULL
+ * needle matches everything, as it does there. */
+gboolean ytdl_library_filter_metadata_matches (const YtdlEntry *entry,
+                                               const char *needle);
 
 /* One entry against the filter. @lookup may be NULL, in which case every
  * video reads as YTDL_VERIFY_UNKNOWN and the verify facet matches nothing. */

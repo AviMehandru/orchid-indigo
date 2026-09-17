@@ -86,10 +86,72 @@ public sealed partial class LibraryPage : Page
     private readonly ObservableCollection<VideoCardModel> _items = new();
     private AppModel Model => AppModel.Current;
 
+    /* Set while the scope box is being populated from code, so its
+     * SelectionChanged does not re-run a search against a control that is
+     * being rebuilt. */
+    private bool _populating;
+
     public LibraryPage()
     {
         InitializeComponent();
         Grid_.ItemsSource = _items;
+
+        _populating = true;
+        foreach (var scope in SearchScopes.All)
+        {
+            SearchScopeBox.Items.Add(SearchScopes.Label(scope));
+        }
+        SearchScopeBox.SelectedIndex = Array.IndexOf(SearchScopes.All, Model.SearchScope);
+        _populating = false;
+    }
+
+    // ---------------------------------------------------------------- //
+    // Collection-wide search                                           //
+    // ---------------------------------------------------------------- //
+
+    private void OnSearchScopeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_populating) return;
+        var i = SearchScopeBox.SelectedIndex;
+        if (i < 0 || i >= SearchScopes.All.Length) return;
+
+        Model.SearchScope = SearchScopes.All[i];
+        Model.UpdateSearch();
+        RefreshBanner();
+        RefreshGrid();
+    }
+
+    private void OnBuildIndex(object sender, RoutedEventArgs e)
+    {
+        Model.BuildSearchIndex();
+        RefreshBanner();
+    }
+
+    private void RefreshBanner()
+    {
+        if (Model.Indexing)
+        {
+            IndexBanner.Title = "";
+            IndexBanner.Message = Model.IndexProgress;
+            IndexBuildButton.IsEnabled = false;
+            IndexBanner.IsOpen = true;
+            return;
+        }
+
+        IndexBuildButton.IsEnabled = true;
+
+        if (!Model.SearchNeedsIndex)
+        {
+            IndexBanner.IsOpen = false;
+            return;
+        }
+
+        var stale = Model.SearchIndexOutdated;
+        var plural = stale == 1 ? "" : "s";
+        IndexBanner.Message = Model.SearchIndex.Count == 0
+            ? $"Searching comments and captions needs an index. {stale} video{plural} to read."
+            : $"{stale} video{plural} changed since the index was built.";
+        IndexBanner.IsOpen = true;
     }
 
     // ---------------------------------------------------------------- //
@@ -229,6 +291,7 @@ public sealed partial class LibraryPage : Page
         base.OnNavigatedTo(e);
         Model.Changed += OnModelChanged;
         RebuildFilterFlyout();
+        RefreshBanner();
         RefreshGrid();
     }
 
@@ -246,6 +309,11 @@ public sealed partial class LibraryPage : Page
     private void OnModelChanged()
     {
         RescanButton.IsEnabled = !Model.Scanning;
+
+        /* The banner is refreshed even mid-scan, because the indexing progress
+         * it carries is raised through this same event and a scan and an index
+         * build are not mutually exclusive states of this page. */
+        RefreshBanner();
         if (Model.Scanning) return;
 
         /* The channel facet is the ARCHIVE's channel list, so the flyout is

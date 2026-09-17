@@ -176,6 +176,23 @@ public sealed class LibraryFilter
 
     public FacetFlags Flags { get; set; } = FacetFlags.None;
 
+    /// <summary>
+    /// When non-null, only videos whose key is in this set pass -- ANDed with
+    /// everything else.
+    /// </summary>
+    /// <remarks>
+    /// This is the result of a collection-wide comment or transcript search,
+    /// which this class knows nothing about and must not, because the filter
+    /// has to stay free of the disk and of the search index's build state. The
+    /// caller is also what decides whether a scope's search is a union with
+    /// the metadata match ("Everything") or a replacement for it ("Comments").
+    ///
+    /// Note the asymmetry with <see cref="Channels"/> and it is deliberate: an
+    /// EMPTY set here means "a search ran and matched nothing", which must show
+    /// nothing, while null means no search is running.
+    /// </remarks>
+    public HashSet<string>? KeyAllow { get; set; }
+
     public SortKey Sort { get; set; } = SortKey.Date;
 
     /// Newest first. The only default that is not a coin toss: an archive is
@@ -199,6 +216,7 @@ public sealed class LibraryFilter
         DateFrom = null;
         DateTo = null;
         Flags = FacetFlags.None;
+        KeyAllow = null;
     }
 
     /// <summary>
@@ -227,7 +245,10 @@ public sealed class LibraryFilter
     /// True when anything at all is narrowing the library. Drives the "filters
     /// active" indicator, so it must NOT count the sort.
     /// </summary>
-    public bool IsNarrowing => Needle.Length > 0 || FacetCount > 0;
+    /* KeyAllow counts: a collection-wide search narrows without putting
+     * anything in the needle, so the empty state would otherwise say "there is
+     * no archive here" when a comment search simply found nothing. */
+    public bool IsNarrowing => Needle.Length > 0 || KeyAllow is not null || FacetCount > 0;
 
     public void SetChannel(string channel, bool on)
     {
@@ -252,6 +273,27 @@ public sealed class LibraryFilter
             if (c < '0' || c > '9') return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Whether the entry's title, uploader, id or channel contains
+    /// <paramref name="needle"/>, case-folded.
+    /// </summary>
+    /// <remarks>
+    /// The substring search the Library has always had, exposed because the
+    /// "Everything" search scope has to union it with the index's hits and
+    /// cannot do that from inside <see cref="Matches"/>. An empty needle
+    /// matches everything, as it does there.
+    /// </remarks>
+    public static bool MetadataMatches(ArchiveEntry e, string needle)
+    {
+        if (needle.Length == 0) return true;
+        foreach (var field in new[] { e.Title, e.Uploader, e.VideoId ?? "", e.Channel })
+        {
+            if (field.Length == 0) continue;
+            if (field.Contains(needle, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private bool MatchesNeedle(ArchiveEntry e)
@@ -291,6 +333,10 @@ public sealed class LibraryFilter
          * none -- would make the library go blank the instant someone opened
          * the facet list and unticked the one channel they had ticked. */
         if (Channels.Count > 0 && !Channels.Contains(e.Channel)) return false;
+
+        /* ANDed with everything else, and checked early because it is one hash
+         * lookup and it is the narrowest thing in the filter when set. */
+        if (KeyAllow is not null && !KeyAllow.Contains(e.Key)) return false;
 
         if (DateFrom is not null || DateTo is not null)
         {

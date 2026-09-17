@@ -20,7 +20,10 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack(path: $model.libraryPath) {
-            content
+            VStack(spacing: 0) {
+                IndexBanner()
+                content
+            }
                 .navigationTitle("Library")
                 .navigationDestination(for: String.self) { key in
                     DetailView(key: key)
@@ -43,9 +46,29 @@ struct LibraryView: View {
         .searchable(
             text: $model.searchText,
             placement: .toolbar,
-            prompt: "Search title, channel or id"
+            prompt: searchPrompt
         )
-        .onChange(of: model.searchText) { _ in model.updateCounts() }
+        /* WHERE a search looks, attached to the search field rather than
+         * buried in the filter menu. The scope changes what the same typed
+         * words MEAN, so it belongs where the words are -- and it is the only
+         * affordance that tells anyone the comments and captions are
+         * searchable at all, which was the entire gap. */
+        .searchScopes($model.searchScope) {
+            ForEach(SearchScope.allCases) { scope in
+                Text(scope.label).tag(scope)
+            }
+        }
+        .onChange(of: model.searchText) { _ in model.updateSearch() }
+        .onChange(of: model.searchScope) { _ in model.updateSearch() }
+    }
+
+    private var searchPrompt: String {
+        switch model.searchScope {
+        case .metadata: return "Search title, channel or id"
+        case .comments: return "Search every archived comment"
+        case .transcript: return "Search every caption line"
+        case .everything: return "Search titles, comments and captions"
+        }
     }
 
     @ViewBuilder
@@ -96,6 +119,53 @@ struct LibraryView: View {
                 .padding(14)
             }
         }
+    }
+}
+
+/* The only place the app can be honest about what a collection-wide search can
+ * currently SEE.
+ *
+ * A comment search against an index that covers none of the archive returns
+ * nothing, and "no results" is a lie about the archive rather than a fact about
+ * it. A persistent bar rather than an alert or a transient message: the fact it
+ * carries stays true until somebody acts on it, and it goes away by itself when
+ * the condition does.
+ */
+private struct IndexBanner: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if model.indexing {
+            bar(model.indexProgress, action: nil)
+        } else if model.searchNeedsIndex {
+            bar(message) { model.buildSearchIndex() }
+        }
+    }
+
+    private var message: String {
+        let stale = model.searchIndexOutdated
+        let plural = stale == 1 ? "" : "s"
+        if model.searchIndex.count == 0 {
+            return "Searching comments and captions needs an index. "
+                + "\(stale) video\(plural) to read."
+        }
+        return "\(stale) video\(plural) changed since the index was built."
+    }
+
+    @ViewBuilder
+    private func bar(_ text: String, action: (() -> Void)?) -> some View {
+        HStack(spacing: 12) {
+            Text(text).font(.callout)
+            Spacer(minLength: 8)
+            if let action {
+                Button("Build index", action: action)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.selection.opacity(0.35))
     }
 }
 

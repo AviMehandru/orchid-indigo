@@ -192,8 +192,13 @@ public sealed partial class MainWindow : Window
     {
         if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
         _model.SearchText = sender.Text;
+        /* UpdateSearch, not UpdateCounts: with a collection-wide scope
+         * selected the typed words have to be run against the index before the
+         * grid can be rebuilt, and UpdateCounts alone would redraw against the
+         * PREVIOUS hit set -- one keystroke behind, which looks like lag
+         * rather than like a bug. */
+        _model.UpdateSearch();
         (ContentFrame.Content as LibraryPage)?.RefreshGrid();
-        _model.UpdateCounts();
     }
 
     /// <summary>

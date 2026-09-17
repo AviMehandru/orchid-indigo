@@ -86,6 +86,8 @@ ytdl_library_filter_reset (YtdlLibraryFilter *filter)
   if (filter->channels->len > 0)
     g_ptr_array_remove_range (filter->channels, 0, filter->channels->len);
   filter->flags = YTDL_FACET_NONE;
+  /* Cleared, not freed: it is borrowed from whoever ran the search. */
+  filter->key_allow = NULL;
   /* sort and descending survive on purpose -- see the header. */
 }
 
@@ -112,6 +114,11 @@ ytdl_library_filter_is_narrowing (const YtdlLibraryFilter *filter)
 {
   g_return_val_if_fail (filter != NULL, FALSE);
   if (filter->needle != NULL && *filter->needle != '\0')
+    return TRUE;
+  /* A collection-wide search narrows without putting anything in the needle,
+   * so the empty state would otherwise say "there is no archive here" when a
+   * comment search simply found nothing. */
+  if (filter->key_allow != NULL)
     return TRUE;
   return ytdl_library_filter_facet_count (filter) > 0;
 }
@@ -185,6 +192,17 @@ matches_needle (const YtdlEntry *e, const char *needle_folded)
 }
 
 gboolean
+ytdl_library_filter_metadata_matches (const YtdlEntry *entry,
+                                      const char *needle)
+{
+  g_return_val_if_fail (entry != NULL, FALSE);
+  if (needle == NULL || *needle == '\0')
+    return TRUE;
+  g_autofree char *folded = g_utf8_casefold (needle, -1);
+  return matches_needle (entry, folded);
+}
+
+gboolean
 ytdl_library_filter_matches (const YtdlLibraryFilter *filter,
                              const YtdlEntry *entry, YtdlVerifyLookup lookup,
                              gpointer user_data)
@@ -197,6 +215,13 @@ ytdl_library_filter_matches (const YtdlLibraryFilter *filter,
           ? g_utf8_casefold (filter->needle, -1)
           : NULL;
   if (!matches_needle (entry, folded))
+    return FALSE;
+
+  /* ANDed with everything else, and checked early because it is one hash
+   * lookup and it is the narrowest thing in the filter when it is set at
+   * all. */
+  if (filter->key_allow != NULL &&
+      !g_hash_table_contains (filter->key_allow, entry->key))
     return FALSE;
 
   /* Empty set means "every channel". The alternative -- empty means none --

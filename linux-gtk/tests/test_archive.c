@@ -525,6 +525,12 @@ void ytdl_register_url_probe_tests (void);
  * VALUES are shared with the macOS and Windows suites. */
 void ytdl_register_library_tests (void);
 
+/* Defined in test_search.c -- the collection-wide comment and transcript
+ * search. Its tokenizer fixtures are shared with the macOS and Windows
+ * suites, because a tokenizer that disagreed between the three apps would
+ * make the same query return different videos with nothing saying why. */
+void ytdl_register_search_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -560,6 +566,7 @@ main (int argc, char **argv)
   ytdl_register_paths_tests ();
   ytdl_register_url_probe_tests ();
   ytdl_register_library_tests ();
+  ytdl_register_search_tests ();
 
   return g_test_run ();
 }

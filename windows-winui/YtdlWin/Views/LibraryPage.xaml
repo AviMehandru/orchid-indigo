@@ -75,6 +75,9 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <!-- The index banner, which is collapsed most of the time and must
+                 not reserve space when it is. -->
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -87,6 +90,25 @@
             <TextBlock Grid.Column="0" Text="Library" Style="{StaticResource TitleTextBlockStyle}" />
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <!--
+                    WHERE a search looks. It belongs beside the search box and
+                    it is not, because NavigationView.AutoSuggestBox takes
+                    exactly one element and there is no room next to it — the
+                    GTK and SwiftUI apps both put their scope control against
+                    the field. This is the platform's constraint rather than a
+                    design choice, so the label says "Search in" to tie the two
+                    together across the gap.
+
+                    Offered at all because it is the only affordance that tells
+                    anyone the comments and captions are searchable, which was
+                    the entire gap.
+                -->
+                <TextBlock Text="Search in" VerticalAlignment="Center"
+                           Style="{StaticResource CaptionSecondary}" />
+                <ComboBox x:Name="SearchScopeBox" MinWidth="150"
+                          SelectionChanged="OnSearchScopeChanged"
+                          ToolTipService.ToolTip="Which text the search box looks at" />
+
                 <!--
                     The sort and facet control. A DropDownButton whose flyout is
                     built in code rather than declared here, because the channel
@@ -119,6 +141,24 @@
         </Grid>
 
         <!--
+            The only place the app can be honest about what a collection-wide
+            search can currently SEE. A comment search against an index that
+            covers none of the archive returns nothing, and "no results" is a
+            lie about the archive rather than a fact about it.
+
+            An InfoBar rather than a ContentDialog or a transient message: the
+            fact it carries stays true until somebody acts on it, and it closes
+            itself when the condition goes away. IsClosable is false for the
+            same reason — dismissing it would not make the index exist.
+        -->
+        <muxc:InfoBar x:Name="IndexBanner" Grid.Row="1" Margin="14,0,14,8"
+                      IsOpen="False" IsClosable="False" Severity="Informational">
+            <muxc:InfoBar.ActionButton>
+                <Button x:Name="IndexBuildButton" Content="Build index" Click="OnBuildIndex" />
+            </muxc:InfoBar.ActionButton>
+        </muxc:InfoBar>
+
+        <!--
             GridView, not an ItemsRepeater in a ScrollViewer.
 
             GridView virtualises out of the box — it realises only the cards
@@ -130,7 +170,7 @@
         -->
         <muxc:GridView
             x:Name="Grid_"
-            Grid.Row="1"
+            Grid.Row="2"
             Padding="14,6,14,14"
             IsItemClickEnabled="True"
             SelectionMode="Single"
@@ -149,7 +189,7 @@
         -->
         <StackPanel
             x:Name="EmptyState"
-            Grid.Row="1"
+            Grid.Row="2"
             Visibility="Collapsed"
             HorizontalAlignment="Center"
             VerticalAlignment="Center"

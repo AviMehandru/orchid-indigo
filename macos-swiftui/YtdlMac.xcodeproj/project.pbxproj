@@ -26,6 +26,7 @@
 		AB0C5674A4E41C66C560C977 /* Pipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01A023C059EA80B9BF564C8 /* Pipeline.swift */; };
 		4D6AEC3FF40F22BC767FD63A /* Profiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 277C81C5191086735C1C7E7E /* Profiles.swift */; };
 		C7E39767C6917D6B50F3C847 /* Runner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A956F81678EDFE282943874 /* Runner.swift */; };
+		37B8A6B8A9A1E18A13388BDF /* SearchIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2023EAFFB6081BB9B315F59 /* SearchIndex.swift */; };
 		520FC42CB60F2E6EBB84045A /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46FEF33AC69F4955F201C9D /* Settings.swift */; };
 		B0F61E45D2B1715F386E200A /* Spawn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0581FAF2275BF5CEB650222E /* Spawn.swift */; };
 		3EBF40F2C985931C5CFF7E68 /* UrlProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D12DA1E49D10E5138CE9149 /* UrlProbe.swift */; };
@@ -36,6 +37,7 @@
 		2EA50D3BD4B46D511DAF5604 /* PipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F044746500AB118BD752E53D /* PipelineTests.swift */; };
 		C2D2843DBE74E64896D8CC5B /* ProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DE22493D129E402D3F46BA2 /* ProfileTests.swift */; };
 		9ACA398925C78C5E885D25F3 /* RunnerProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */; };
+		0D1437F6E776C202551B66EA /* SearchIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A80918D6CFAA0900D31144A /* SearchIndexTests.swift */; };
 		21878A708E0266E9BB3E3C84 /* TranscriptCommentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */; };
 		A66601704408A0C98BC7ACDE /* UrlProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1392B36F970914A4DE6E055 /* UrlProbeTests.swift */; };
 		A5A588C7FDEB2CFB180E68D4 /* CLI_VERSION in Resources */ = {isa = PBXBuildFile; fileRef = 28E074626A36B87A2E22CA57 /* CLI_VERSION */; };
@@ -71,6 +73,7 @@
 		C01A023C059EA80B9BF564C8 /* Pipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pipeline.swift; sourceTree = "<group>"; };
 		277C81C5191086735C1C7E7E /* Profiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Profiles.swift; sourceTree = "<group>"; };
 		9A956F81678EDFE282943874 /* Runner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Runner.swift; sourceTree = "<group>"; };
+		D2023EAFFB6081BB9B315F59 /* SearchIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndex.swift; sourceTree = "<group>"; };
 		B46FEF33AC69F4955F201C9D /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
 		0581FAF2275BF5CEB650222E /* Spawn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spawn.swift; sourceTree = "<group>"; };
 		9D12DA1E49D10E5138CE9149 /* UrlProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UrlProbe.swift; sourceTree = "<group>"; };
@@ -81,6 +84,7 @@
 		F044746500AB118BD752E53D /* PipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipelineTests.swift; sourceTree = "<group>"; };
 		4DE22493D129E402D3F46BA2 /* ProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileTests.swift; sourceTree = "<group>"; };
 		13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerProcessTests.swift; sourceTree = "<group>"; };
+		4A80918D6CFAA0900D31144A /* SearchIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndexTests.swift; sourceTree = "<group>"; };
 		ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptCommentTests.swift; sourceTree = "<group>"; };
 		B1392B36F970914A4DE6E055 /* UrlProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UrlProbeTests.swift; sourceTree = "<group>"; };
 		28E074626A36B87A2E22CA57 /* CLI_VERSION */ = {isa = PBXFileReference; lastKnownFileType = text; name = CLI_VERSION; path = ../CLI_VERSION; sourceTree = "<group>"; };
@@ -144,6 +148,7 @@
 				C01A023C059EA80B9BF564C8 /* Pipeline.swift */,
 				277C81C5191086735C1C7E7E /* Profiles.swift */,
 				9A956F81678EDFE282943874 /* Runner.swift */,
+				D2023EAFFB6081BB9B315F59 /* SearchIndex.swift */,
 				B46FEF33AC69F4955F201C9D /* Settings.swift */,
 				0581FAF2275BF5CEB650222E /* Spawn.swift */,
 				9D12DA1E49D10E5138CE9149 /* UrlProbe.swift */,
@@ -161,6 +166,7 @@
 				F044746500AB118BD752E53D /* PipelineTests.swift */,
 				4DE22493D129E402D3F46BA2 /* ProfileTests.swift */,
 				13A5729E6F635391CEA25B37 /* RunnerProcessTests.swift */,
+				4A80918D6CFAA0900D31144A /* SearchIndexTests.swift */,
 				ED06565CA3A767A5DF39D4AA /* TranscriptCommentTests.swift */,
 				B1392B36F970914A4DE6E055 /* UrlProbeTests.swift */,
 			);
@@ -304,6 +310,7 @@
 				AB0C5674A4E41C66C560C977 /* Pipeline.swift in Sources */,
 				4D6AEC3FF40F22BC767FD63A /* Profiles.swift in Sources */,
 				C7E39767C6917D6B50F3C847 /* Runner.swift in Sources */,
+				37B8A6B8A9A1E18A13388BDF /* SearchIndex.swift in Sources */,
 				520FC42CB60F2E6EBB84045A /* Settings.swift in Sources */,
 				B0F61E45D2B1715F386E200A /* Spawn.swift in Sources */,
 				3EBF40F2C985931C5CFF7E68 /* UrlProbe.swift in Sources */,
@@ -321,6 +328,7 @@
 				2EA50D3BD4B46D511DAF5604 /* PipelineTests.swift in Sources */,
 				C2D2843DBE74E64896D8CC5B /* ProfileTests.swift in Sources */,
 				9ACA398925C78C5E885D25F3 /* RunnerProcessTests.swift in Sources */,
+				0D1437F6E776C202551B66EA /* SearchIndexTests.swift in Sources */,
 				21878A708E0266E9BB3E3C84 /* TranscriptCommentTests.swift in Sources */,
 				A66601704408A0C98BC7ACDE /* UrlProbeTests.swift in Sources */,
 			);

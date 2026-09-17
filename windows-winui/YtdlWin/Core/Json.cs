@@ -113,10 +113,25 @@ public static class JsonFile
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    public static byte[] Write(Action<Utf8JsonWriter> body)
+    /* The same options with the indenting off, for the one file this app
+     * writes that no person is ever meant to open: the search index. It is the
+     * largest thing in the cache directory and is a few bytes of tokens per
+     * video, so indenting it would add a byte per token for nobody's benefit.
+     * Everything else stays indented, for the reason above. */
+    private static readonly JsonWriterOptions CompactOptions = new()
+    {
+        Indented = false,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <param name="indented">
+    /// Defaults to true, so every caller that existed before the search index
+    /// is unchanged. Pass false only for a file that is machine-read only.
+    /// </param>
+    public static byte[] Write(Action<Utf8JsonWriter> body, bool indented = true)
     {
         using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream, WriteOptions))
+        using (var writer = new Utf8JsonWriter(stream, indented ? WriteOptions : CompactOptions))
         {
             body(writer);
         }

@@ -272,6 +272,105 @@ public sealed class AppModel
     /// </summary>
     public VerifyCache VerifyCache { get; } = new();
 
+    /// <summary>Collection-wide comment and transcript search.</summary>
+    /// <remarks>
+    /// The index is LOADED at startup and never built there. Reading every
+    /// info.json in an archive is the most expensive thing this app can do,
+    /// and doing it unasked on every launch would make opening the window cost
+    /// what opening every video costs -- the exact rule the archive scan
+    /// already follows. The banner offers it when a scope needs it.
+    /// </remarks>
+    public SearchIndex SearchIndex { get; } = new();
+
+    public SearchScope SearchScope { get; set; } = SearchScope.Metadata;
+
+    /// The keys the current collection-wide search admits. null when the scope
+    /// needs no index or the box is empty, which is NOT the same as empty:
+    /// null means "not narrowing", empty means "narrowing to nothing".
+    public HashSet<string>? SearchHits { get; private set; }
+
+    public bool Indexing { get; private set; }
+    public string IndexProgress { get; private set; } = "";
+
+    /// <summary>
+    /// How many videos a collection-wide search currently cannot see.
+    /// </summary>
+    /// <remarks>
+    /// The banner is the only place the app can be honest about this. A
+    /// comment search against an index that covers none of the archive returns
+    /// nothing, and "no results" is a lie about the archive rather than a fact
+    /// about it.
+    /// </remarks>
+    public int SearchIndexOutdated => SearchIndex.Outdated(Index.Entries);
+
+    /// <summary>
+    /// True when a collection-wide scope is selected and the index cannot
+    /// answer for part of the archive.
+    /// </summary>
+    public bool SearchNeedsIndex =>
+        SearchScopes.NeedsIndex(SearchScope) && SearchIndexOutdated > 0;
+
+    /// <summary>
+    /// Recompute the collection-wide hit set for the current scope and box.
+    /// </summary>
+    public void UpdateSearch()
+    {
+        var text = SearchText.Trim();
+        if (SearchScope == SearchScope.Metadata || text.Length == 0)
+        {
+            SearchHits = null;
+            UpdateCounts();
+            return;
+        }
+
+        var hits = SearchIndex.Query(text, SearchScope);
+        if (SearchScope == SearchScope.Everything)
+        {
+            /* A union cannot be expressed as a needle plus a key set, because
+             * those AND -- so the metadata matches are folded into the key set
+             * here rather than left to the filter. */
+            foreach (var e in Index.Entries)
+            {
+                if (LibraryFilter.MetadataMatches(e, text)) hits.Add(e.Key);
+            }
+        }
+        SearchHits = hits;
+        UpdateCounts();
+    }
+
+    public async void BuildSearchIndex()
+    {
+        if (Indexing || Scanning) return;
+        Indexing = true;
+        IndexProgress = "Reading comments and captions…";
+        Changed?.Invoke();
+
+        var entries = Index.Entries;
+        var store = SearchIndex;
+
+        await System.Threading.Tasks.Task.Run(() =>
+        {
+            store.Build(entries, (done, total) =>
+            {
+                /* Marshalled back rather than written from the worker: every
+                 * property on this class is read by a page on the UI thread. */
+                _dispatcher.TryEnqueue(() =>
+                {
+                    IndexProgress = $"Reading comments and captions… {done} of {total}";
+                    Changed?.Invoke();
+                });
+            });
+            store.Save();
+        });
+
+        Indexing = false;
+        /* Re-run the search rather than just redrawing: the whole point of
+         * having built the index is that the query the user already typed can
+         * now be answered. */
+        UpdateSearch();
+        Changed?.Invoke();
+    }
+
     /// <summary>
     /// The search box and the facets are ONE filter, so the needle is pushed
     /// into it here rather than being a second, parallel narrowing that the
@@ -279,7 +378,31 @@ public sealed class AppModel
     /// </summary>
     public List<ArchiveEntry> FilteredEntries()
     {
-        Filter.Needle = SearchText.Trim();
+        var text = SearchText.Trim();
+
+        /* The three shapes are deliberately different:
+         *
+         *   Metadata    the substring match the Library always had.
+         *   Comments
+         *   Transcript  the index answers alone. The needle is cleared,
+         *               because leaving it set would AND the metadata match on
+         *               top and a search for a word SAID in a video would
+         *               return only the videos with that word in the TITLE as
+         *               well.
+         *   Everything  the union of both, folded into the key set by
+         *               UpdateSearch -- a union cannot be expressed as a
+         *               needle plus a key set, because those AND. */
+        if (SearchScope == SearchScope.Metadata || text.Length == 0)
+        {
+            Filter.Needle = text;
+            Filter.KeyAllow = null;
+        }
+        else
+        {
+            Filter.Needle = "";
+            Filter.KeyAllow = SearchHits ?? new HashSet<string>(StringComparer.Ordinal);
+        }
+
         return Filter.Apply(Index.Entries, VerifyCache.State);
     }
 
@@ -300,6 +423,7 @@ public sealed class AppModel
     {
         Filter.Reset();
         SearchText = "";
+        SearchHits = null;
         UpdateCounts();
     }
 

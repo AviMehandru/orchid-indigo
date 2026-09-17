@@ -135,6 +135,19 @@ struct LibraryFilter: Equatable {
 
     var flags: FacetFlags = []
 
+    /// When non-nil, only videos whose key is in this set pass -- ANDed with
+    /// everything else.
+    ///
+    /// This is the result of a collection-wide comment or transcript search,
+    /// which this file knows nothing about and must not, because the filter
+    /// has to stay free of the disk and of the search index's build state. The
+    /// caller is also what decides whether a scope's search is a union with
+    /// the metadata match ("Everything") or a replacement for it ("Comments").
+    /// Expressing that here would mean this struct carrying a second,
+    /// differently combined needle, for a choice that belongs to the search
+    /// control.
+    var keyAllow: Set<String>?
+
     var sort: SortKey = .date
     /// Newest first. The only default that is not a coin toss: an archive is
     /// added to at the newest end, so what someone wants to see when the
@@ -152,6 +165,7 @@ struct LibraryFilter: Equatable {
         dateFrom = nil
         dateTo = nil
         flags = []
+        keyAllow = nil
     }
 
     /// How many facets are set, for the count beside the filter control. The
@@ -170,7 +184,11 @@ struct LibraryFilter: Equatable {
     /// True when anything at all is narrowing the library. Drives the
     /// "filters active" indicator, so it must NOT count the sort.
     var isNarrowing: Bool {
-        !needle.isEmpty || facetCount > 0
+        /* keyAllow counts: a collection-wide search narrows without putting
+         * anything in the needle, so the empty state would otherwise say
+         * "there is no archive here" when a comment search simply found
+         * nothing. */
+        !needle.isEmpty || keyAllow != nil || facetCount > 0
     }
 
     mutating func setChannel(_ channel: String, on: Bool) {
@@ -187,7 +205,14 @@ struct LibraryFilter: Equatable {
         return s.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
-    private func matchesNeedle(_ e: ArchiveEntry) -> Bool {
+    /// Whether the entry's title, uploader, id or channel contains `needle`,
+    /// case-folded.
+    ///
+    /// The substring search the Library has always had, exposed because the
+    /// "Everything" search scope has to union it with the index's hits and
+    /// cannot do that from inside `matches`. An empty needle matches
+    /// everything, as it does there.
+    static func metadataMatches(_ e: ArchiveEntry, needle: String) -> Bool {
         if needle.isEmpty { return true }
         let want = needle.lowercased()
         for field in [e.title, e.uploader, e.videoID ?? "", e.channel]
@@ -195,6 +220,10 @@ struct LibraryFilter: Equatable {
             if field.lowercased().contains(want) { return true }
         }
         return false
+    }
+
+    private func matchesNeedle(_ e: ArchiveEntry) -> Bool {
+        LibraryFilter.metadataMatches(e, needle: needle)
     }
 
     /// One entry against the filter. `verify` may be nil, in which case every
@@ -206,6 +235,13 @@ struct LibraryFilter: Equatable {
          * none -- would make the library go blank the instant someone opened
          * the facet list and unticked the one channel they had ticked. */
         if !channels.isEmpty, !channels.contains(e.channel) { return false }
+
+        /* ANDed with everything else, and checked early because it is one hash
+         * lookup and it is the narrowest thing in the filter when it is set at
+         * all. Note the asymmetry with `channels` above and it is deliberate:
+         * an EMPTY keyAllow means "a search ran and matched nothing", which
+         * must show nothing, while a nil one means no search is running. */
+        if let allow = keyAllow, !allow.contains(e.key) { return false }
 
         if dateFrom != nil || dateTo != nil {
             guard LibraryFilter.isYYYYMMDD(e.uploadDate), let d = e.uploadDate else {

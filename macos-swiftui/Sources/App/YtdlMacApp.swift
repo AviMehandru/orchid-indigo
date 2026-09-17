@@ -128,6 +128,22 @@ final class AppModel: ObservableObject {
      * the objectWillChange below rather than by being observed. */
     let verifyCache = VerifyCache()
 
+    /* Collection-wide comment and transcript search.
+     *
+     * The index is LOADED at startup and never built there. Reading every
+     * info.json in an archive is the most expensive thing this app can do, and
+     * doing it unasked on every launch would make opening the window cost what
+     * opening every video costs -- which is the exact rule the archive scan
+     * already follows. The banner offers it when a scope needs it. */
+    let searchIndex = SearchIndex()
+    @Published var searchScope: SearchScope = .metadata
+    /// The keys the current collection-wide search admits. nil when the scope
+    /// needs no index or the field is empty, which is NOT the same as empty:
+    /// nil means "not narrowing", empty means "narrowing to nothing".
+    @Published var searchHits: Set<String>?
+    @Published var indexing = false
+    @Published var indexProgress = ""
+
     /// The library's navigation stack: a path of opaque keys, never entries.
     @Published var libraryPath: [String] = []
     /// Set when a scan fails outright, which is the one thing that must
@@ -290,8 +306,84 @@ final class AppModel: ObservableObject {
     /// count and the empty state would each have to remember to apply.
     var filteredEntries: [ArchiveEntry] {
         var f = filter
-        f.needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        /* The three shapes are deliberately different, and the difference is
+         * the whole reason this is not one expression:
+         *
+         *   .metadata    the substring match the Library always had.
+         *   .comments
+         *   .transcript  the index answers alone. The needle is cleared,
+         *                because leaving it set would AND the metadata match
+         *                on top and a search for a word SAID in a video would
+         *                return only the videos with that word in the TITLE as
+         *                well.
+         *   .everything  the union of both, which is folded into the key set
+         *                by updateSearch -- a union cannot be expressed as a
+         *                needle plus a key set, because those AND. */
+        if searchScope == .metadata || text.isEmpty {
+            f.needle = text
+            f.keyAllow = nil
+        } else {
+            f.needle = ""
+            f.keyAllow = searchHits ?? []
+        }
+
         return f.apply(to: index.entries, verify: verifyCache.state(for:))
+    }
+
+    /// Recompute the collection-wide hit set for the current scope and field.
+    func updateSearch() {
+        let text = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard searchScope != .metadata, !text.isEmpty else {
+            searchHits = nil
+            updateCounts()
+            return
+        }
+
+        var hits = searchIndex.query(text, scope: searchScope)
+        if searchScope == .everything {
+            for e in index.entries where LibraryFilter.metadataMatches(e, needle: text) {
+                hits.insert(e.key)
+            }
+        }
+        searchHits = hits
+        updateCounts()
+    }
+
+    /// How many videos a collection-wide search currently cannot see.
+    ///
+    /// The banner is the only place the app can be honest about this. A
+    /// comment search against an index that covers none of the archive returns
+    /// nothing, and "no results" is a lie about the archive rather than a fact
+    /// about it.
+    var searchIndexOutdated: Int {
+        searchIndex.outdated(in: index.entries)
+    }
+
+    func buildSearchIndex() {
+        guard !indexing, !scanning else { return }
+        indexing = true
+        indexProgress = "Reading comments and captions…"
+
+        let entries = index.entries
+        let store = searchIndex
+        Task.detached(priority: .utility) {
+            store.build(over: entries) { done, total in
+                Task { @MainActor in
+                    self.indexProgress =
+                        "Reading comments and captions… \(done) of \(total)"
+                }
+            }
+            store.save()
+            await MainActor.run {
+                self.indexing = false
+                /* Re-run the search rather than just redrawing: the whole
+                 * point of having built the index is that the query the user
+                 * already typed can now be answered. */
+                self.updateSearch()
+            }
+        }
     }
 
     /// Whether anything at all is narrowing the library, INCLUDING the search
@@ -303,12 +395,19 @@ final class AppModel: ObservableObject {
             || filter.facetCount > 0
     }
 
+    /// True when a collection-wide scope is selected and the index cannot
+    /// answer for part of the archive. The banner keys off this.
+    var searchNeedsIndex: Bool {
+        searchScope.needsIndex && searchIndexOutdated > 0
+    }
+
     /// Clear the facets AND the search field. The needle is part of the filter
     /// as far as the user is concerned, so leaving the search box populated
     /// after "Clear filters" would leave a term visibly applied that is not.
     func clearFilters() {
         filter.reset()
         searchText = ""
+        searchHits = nil
         updateCounts()
     }
 

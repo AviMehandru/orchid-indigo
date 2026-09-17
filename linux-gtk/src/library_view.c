@@ -325,8 +325,14 @@ update_empty_state (YtdlLibraryView *self, gboolean have_videos)
 
   if (have_videos && narrowed)
     {
+      /* edit-find-symbolic, not funnel-symbolic: the latter is the obvious
+       * name for this and is absent from the adwaita-icon-theme that Ubuntu
+       * 24.04 -- this app's stated floor -- ships, so it draws the
+       * broken-image glyph. See the note in main.c: an icon name goes in only
+       * after it has been seen to DRAW. This one was caught in a screenshot
+       * of the very state it appears in. */
       adw_status_page_set_icon_name (ADW_STATUS_PAGE (self->empty),
-                                     "funnel-symbolic");
+                                     "edit-find-symbolic");
       adw_status_page_set_title (ADW_STATUS_PAGE (self->empty),
                                  "No video matches");
       adw_status_page_set_description (

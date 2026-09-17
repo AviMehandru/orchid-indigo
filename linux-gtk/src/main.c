@@ -31,6 +31,7 @@
 #include "paths.h"
 #include "pipeline.h"
 #include "profiles.h"
+#include "search_index.h"
 #include "settings.h"
 #include "style.h"
 #include "verify_cache.h"
@@ -74,6 +75,17 @@ typedef struct
   GtkWidget *flag_layout;
   GtkWidget *flag_verify;
   GtkWidget *verify_note;
+
+  /* Collection-wide comment and transcript search. */
+  YtdlSearchIndex *search_index; /* owned */
+  GtkWidget       *scope_drop;
+  GtkWidget       *index_banner;
+  GHashTable      *search_hits; /* owned; borrowed by the filter */
+  GCancellable    *index_cancel;
+  gboolean         indexing;
+  gint             index_done;
+  gint             index_total;
+  guint            index_tick;
   /* Set while the popover is being repopulated from the index, so the
    * "toggled" handlers do not each kick off a rebuild against a
    * half-rebuilt set of controls. */
@@ -95,6 +107,8 @@ typedef struct
  * on_scan_finished, which has to sit up here with the other scan machinery. */
 static void populate_facets (App *app);
 static void apply_filter (App *app);
+static void run_search (App *app);
+static void update_search_banner (App *app);
 
 /* A scan produces a whole new index; it is swapped in on the main thread so
  * the view is never looking at a half-built one. */
@@ -399,9 +413,7 @@ static void
 on_search_changed (GtkSearchEntry *entry, gpointer user_data)
 {
   App *app = user_data;
-  ytdl_library_view_set_search (YTDL_LIBRARY_VIEW (app->library),
-                                gtk_editable_get_text (GTK_EDITABLE (entry)));
-  update_counts (app);
+  run_search (app);
 }
 
 static void
@@ -590,7 +602,10 @@ on_clear_filters (GtkButton *button, gpointer user_data)
   gtk_editable_set_text (GTK_EDITABLE (app->search), "");
 
   populate_facets (app);
-  apply_filter (app);
+  /* run_search rather than apply_filter: clearing the box has to drop the
+   * collection-wide hit set too, and that lives on the other side of the
+   * search control rather than inside the filter. */
+  run_search (app);
 }
 
 /* Rebuild the controls from the current index and the current filter.
@@ -669,6 +684,227 @@ populate_facets (App *app)
   gtk_widget_set_visible (app->channel_frame, channels > 1);
 
   app->populating = FALSE;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Collection-wide comment and transcript search                          */
+/* ---------------------------------------------------------------------- */
+
+static YtdlSearchScope
+current_scope (App *app)
+{
+  guint sel = gtk_drop_down_get_selected (GTK_DROP_DOWN (app->scope_drop));
+  if (sel == GTK_INVALID_LIST_POSITION)
+    return YTDL_SEARCH_METADATA;
+  return (YtdlSearchScope) sel;
+}
+
+/* The banner is the only place the app can be honest about what a search can
+ * currently SEE. A comment search against an index that covers none of the
+ * archive returns nothing, and "no results" is a lie about the archive rather
+ * than a fact about it. */
+static void
+update_search_banner (App *app)
+{
+  if (app->index_banner == NULL)
+    return;
+
+  if (!ytdl_search_scope_needs_index (current_scope (app)))
+    {
+      adw_banner_set_revealed (ADW_BANNER (app->index_banner), FALSE);
+      return;
+    }
+
+  if (app->indexing)
+    {
+      gint done = g_atomic_int_get (&app->index_done);
+      gint total = g_atomic_int_get (&app->index_total);
+      g_autofree char *msg =
+          total > 0
+              ? g_strdup_printf ("Reading comments and captions… %d of %d",
+                                 done, total)
+              : g_strdup ("Reading comments and captions…");
+      adw_banner_set_title (ADW_BANNER (app->index_banner), msg);
+      adw_banner_set_button_label (ADW_BANNER (app->index_banner), "Stop");
+      adw_banner_set_revealed (ADW_BANNER (app->index_banner), TRUE);
+      return;
+    }
+
+  guint stale = ytdl_search_index_outdated (app->search_index, app->index);
+  if (stale == 0)
+    {
+      adw_banner_set_revealed (ADW_BANNER (app->index_banner), FALSE);
+      return;
+    }
+
+  guint have = ytdl_search_index_size (app->search_index);
+  g_autofree char *msg =
+      have == 0
+          ? g_strdup_printf ("Searching comments and captions needs an index. "
+                             "%u video%s to read.",
+                             stale, stale == 1 ? "" : "s")
+          : g_strdup_printf ("%u video%s changed since the index was built.",
+                             stale, stale == 1 ? "" : "s");
+  adw_banner_set_title (ADW_BANNER (app->index_banner), msg);
+  adw_banner_set_button_label (ADW_BANNER (app->index_banner), "Build index");
+  adw_banner_set_revealed (ADW_BANNER (app->index_banner), TRUE);
+}
+
+/* Recompute which videos the search box admits, for the current scope.
+ *
+ * The three shapes are deliberately different, and the difference is the whole
+ * reason this is not one code path:
+ *
+ *   METADATA    the substring match the Library always had. Needs no index,
+ *               answers instantly, and is what almost every search is.
+ *   COMMENTS
+ *   TRANSCRIPT  the index answers alone. The needle is cleared, because
+ *               leaving it set would AND the metadata match on top and a
+ *               search for a word said in a video would return only the
+ *               videos with that word in the TITLE as well.
+ *   EVERYTHING  the union of both. A union cannot be expressed as a needle
+ *               plus a key set -- those AND -- so the metadata matches are
+ *               folded into the key set here.
+ */
+static void
+run_search (App *app)
+{
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+  const char *text = gtk_editable_get_text (GTK_EDITABLE (app->search));
+  YtdlSearchScope scope = current_scope (app);
+
+  g_clear_pointer (&app->search_hits, g_hash_table_unref);
+  f->key_allow = NULL;
+
+  if (scope == YTDL_SEARCH_METADATA || text == NULL || *text == '\0')
+    {
+      g_free (f->needle);
+      f->needle = g_strdup (text);
+      apply_filter (app);
+      update_search_banner (app);
+      return;
+    }
+
+  g_free (f->needle);
+  f->needle = NULL;
+
+  /* The query's own hash table owns nothing; its keys point into the search
+   * index's own storage, which outlives every rebuild of the grid. */
+  app->search_hits = ytdl_search_index_query (app->search_index, text, scope);
+
+  if (scope == YTDL_SEARCH_EVERYTHING && app->index != NULL)
+    {
+      for (guint i = 0; i < app->index->entries->len; i++)
+        {
+          const YtdlEntry *e = g_ptr_array_index (app->index->entries, i);
+          if (ytdl_library_filter_metadata_matches (e, text))
+            g_hash_table_add (app->search_hits, e->key);
+        }
+    }
+
+  f->key_allow = app->search_hits;
+  apply_filter (app);
+  update_search_banner (app);
+}
+
+static void
+on_scope_changed (GObject *drop, GParamSpec *pspec, gpointer user_data)
+{
+  App *app = user_data;
+  if (app->populating)
+    return;
+  run_search (app);
+}
+
+typedef struct
+{
+  App *app;
+} IndexJob;
+
+/* Runs on the INDEX THREAD. Two atomics and nothing else, for the same reason
+ * the scan's progress callback touches nothing but two atomics. */
+static void
+on_index_progress (gsize done, gsize total, gpointer user_data)
+{
+  App *app = user_data;
+  g_atomic_int_set (&app->index_done, (gint) done);
+  g_atomic_int_set (&app->index_total, (gint) total);
+}
+
+static gboolean
+on_index_tick (gpointer user_data)
+{
+  App *app = user_data;
+  if (!app->indexing)
+    {
+      app->index_tick = 0;
+      return G_SOURCE_REMOVE;
+    }
+  update_search_banner (app);
+  return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+on_index_finished (gpointer user_data)
+{
+  IndexJob *job = user_data;
+  App *app = job->app;
+
+  app->indexing = FALSE;
+  g_clear_object (&app->index_cancel);
+  ytdl_search_index_save (app->search_index);
+
+  /* Re-run the search rather than just redrawing: the whole point of having
+   * built the index is that the query the user already typed can now be
+   * answered. */
+  run_search (app);
+
+  g_free (job);
+  return G_SOURCE_REMOVE;
+}
+
+static gpointer
+index_thread (gpointer user_data)
+{
+  IndexJob *job = user_data;
+  ytdl_search_index_build (job->app->search_index, job->app->index,
+                           on_index_progress, job->app,
+                           job->app->index_cancel);
+  g_idle_add (on_index_finished, job);
+  return NULL;
+}
+
+/* The banner's button is Build while idle and Stop while building, so one
+ * handler covers both -- which also means there is no state in which the
+ * banner offers a button that does nothing. */
+static void
+on_index_banner_clicked (AdwBanner *banner, gpointer user_data)
+{
+  App *app = user_data;
+
+  if (app->indexing)
+    {
+      g_cancellable_cancel (app->index_cancel);
+      return;
+    }
+  if (app->index == NULL || app->scanning)
+    return;
+
+  app->indexing = TRUE;
+  g_atomic_int_set (&app->index_done, 0);
+  g_atomic_int_set (&app->index_total, 0);
+  g_clear_object (&app->index_cancel);
+  app->index_cancel = g_cancellable_new ();
+
+  if (app->index_tick == 0)
+    app->index_tick = g_timeout_add (120, on_index_tick, app);
+  update_search_banner (app);
+
+  IndexJob *job = g_new0 (IndexJob, 1);
+  job->app = app;
+  GThread *t = g_thread_new ("ytdl-search-index", index_thread, job);
+  g_thread_unref (t);
 }
 
 static GtkWidget *
@@ -942,8 +1178,26 @@ build_main_page (App *app)
   g_signal_connect (app->search, "search-changed",
                     G_CALLBACK (on_search_changed), app);
 
+  /* WHERE a search looks, beside the box rather than buried in the filter
+   * popover. The scope changes what the same typed words MEAN, so it belongs
+   * where the words are -- and it is the only affordance that tells anyone the
+   * comments and captions are searchable at all, which was the entire gap. */
+  const char *scopes[YTDL_N_SEARCH_SCOPES + 1];
+  for (int i = 0; i < YTDL_N_SEARCH_SCOPES; i++)
+    scopes[i] = ytdl_search_scope_label ((YtdlSearchScope) i);
+  scopes[YTDL_N_SEARCH_SCOPES] = NULL;
+
+  app->scope_drop = gtk_drop_down_new_from_strings (scopes);
+  gtk_widget_set_tooltip_text (app->scope_drop, "Where to search");
+  g_signal_connect (app->scope_drop, "notify::selected",
+                    G_CALLBACK (on_scope_changed), app);
+
+  GtkWidget *search_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_box_append (GTK_BOX (search_row), app->search);
+  gtk_box_append (GTK_BOX (search_row), app->scope_drop);
+
   app->search_bar = gtk_search_bar_new ();
-  gtk_search_bar_set_child (GTK_SEARCH_BAR (app->search_bar), app->search);
+  gtk_search_bar_set_child (GTK_SEARCH_BAR (app->search_bar), search_row);
   gtk_search_bar_connect_entry (GTK_SEARCH_BAR (app->search_bar),
                                 GTK_EDITABLE (app->search));
   /* Two-way, so Escape inside the bar un-toggles the button as well. */
@@ -967,9 +1221,20 @@ build_main_page (App *app)
                                    ADW_VIEW_STACK (app->stack));
 
   /* --- assembly ---------------------------------------------------- */
+  /* AdwBanner, not a toast and not a label wedged into the status line. A
+   * toast disappears, and the fact it carries -- that a comment search
+   * currently cannot see most of the archive -- stays true until somebody
+   * acts on it. A banner is the widget for exactly that: persistent, one
+   * action, and it goes away by itself when the condition does. */
+  app->index_banner = adw_banner_new ("");
+  adw_banner_set_revealed (ADW_BANNER (app->index_banner), FALSE);
+  g_signal_connect (app->index_banner, "button-clicked",
+                    G_CALLBACK (on_index_banner_clicked), app);
+
   GtkWidget *toolbar = adw_toolbar_view_new ();
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), header);
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), app->search_bar);
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), app->index_banner);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), app->stack);
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar), status_bar);
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar),
@@ -1104,6 +1369,12 @@ main (int argc, char **argv)
    * straight to the library view. Never fails: a missing or corrupt store
    * yields an empty cache, which costs one re-verify. */
   app.verify = ytdl_verify_cache_load ();
+  /* Loaded, never built, at startup. Reading every info.json in an archive is
+   * the most expensive thing this app can do, and doing it unasked on every
+   * launch would make opening the window cost what opening every video costs
+   * -- which is the exact rule the index scan already follows. The banner
+   * offers it when a scope needs it. */
+  app.search_index = ytdl_search_index_load ();
 
   /* --archive-root, then the root chosen on the Health pane, then the usual
    * locations. The middle one used to be missing: settings.json carried an
@@ -1140,6 +1411,16 @@ main (int argc, char **argv)
    * expensive mistake. */
   ytdl_verify_cache_save (app.verify);
   g_clear_pointer (&app.verify, ytdl_verify_cache_free);
+  /* Cancelled, not joined: the build thread holds only the index and a
+   * cancellable, and a cancelled build simply stops having re-parsed fewer
+   * videos than it meant to -- which the next launch's stale count picks up.
+   * Saving here keeps whatever it did finish. */
+  if (app.index_cancel != NULL)
+    g_cancellable_cancel (app.index_cancel);
+  g_clear_object (&app.index_cancel);
+  ytdl_search_index_save (app.search_index);
+  g_clear_pointer (&app.search_index, ytdl_search_index_free);
+  g_clear_pointer (&app.search_hits, g_hash_table_unref);
   g_clear_pointer (&app.settings, ytdl_settings_free);
   g_clear_pointer (&app.index, ytdl_index_free);
   g_free (app.archive_root);
