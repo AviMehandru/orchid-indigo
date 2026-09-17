@@ -19,6 +19,7 @@ ytdl_settings_free (YtdlSettings *s)
     return;
   g_free (s->data_root);
   g_free (s->archive_root);
+  g_free (s->sort_key);
   g_free (s);
 }
 
@@ -40,6 +41,13 @@ ytdl_settings_load (void)
 {
   YtdlSettings *s = g_new0 (YtdlSettings, 1);
   s->default_workers = 1;
+  /* Set HERE, beside default_workers, and not only in the parse below --
+   * every "no settings file yet" path returns early from this function, so a
+   * default that lives further down applies to upgrades and not to fresh
+   * installs. This one is newest-first, and g_new0 had quietly made a first
+   * launch oldest-first. Found by running the app and reading the grid, not
+   * by reading this file. */
+  s->sort_descending = TRUE;
 
   g_autofree char *path = settings_path ();
   g_autoptr (JsonParser) parser = json_parser_new ();
@@ -53,6 +61,15 @@ ytdl_settings_load (void)
   JsonObject *obj = json_node_get_object (root);
   s->data_root = opt_string (obj, "data_root");
   s->archive_root = opt_string (obj, "archive_root");
+  s->sort_key = opt_string (obj, "library_sort");
+  /* Absent reads as TRUE rather than FALSE, which is what a plain
+   * get_boolean_member on a missing key would give: newest first is the
+   * default, and an upgrade from a settings.json written before this
+   * existed must not silently flip every Library to oldest-first. */
+  s->sort_descending =
+      json_object_has_member (obj, "library_sort_descending")
+          ? json_object_get_boolean_member (obj, "library_sort_descending")
+          : TRUE;
   if (json_object_has_member (obj, "default_workers"))
     s->default_workers = (guint) json_object_get_int_member (obj, "default_workers");
   if (s->default_workers < 1)
@@ -74,6 +91,10 @@ ytdl_settings_save (const YtdlSettings *s)
                                  s->archive_root != NULL ? s->archive_root : "");
   json_builder_set_member_name (b, "default_workers");
   json_builder_add_int_value (b, s->default_workers);
+  json_builder_set_member_name (b, "library_sort");
+  json_builder_add_string_value (b, s->sort_key != NULL ? s->sort_key : "");
+  json_builder_set_member_name (b, "library_sort_descending");
+  json_builder_add_boolean_value (b, s->sort_descending);
   json_builder_end_object (b);
 
   g_autoptr (JsonGenerator) gen = json_generator_new ();

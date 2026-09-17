@@ -121,6 +121,12 @@ public sealed class AppModel
         Profiles = ProfileStore.Load();
         Form = new DownloadsFormState(Settings, Profiles);
         ArchiveRoot = ResolveRoot();
+
+        /* The saved ordering, before the first scan, so the first grid ever
+         * drawn is already in the order this user chose. The FACETS
+         * deliberately do not persist -- see Settings. */
+        Filter.Sort = SortKeys.FromId(Settings.LibrarySort);
+        Filter.Descending = Settings.LibrarySortDescending;
     }
 
     public static AppModel Initialise(DispatcherQueue dispatcher)
@@ -253,26 +259,73 @@ public sealed class AppModel
 
     // MARK: - Filtering
 
-    /// Case-insensitive substring over title, uploader, video id and channel.
+    /// <summary>
+    /// The Library's sort and facets. The RULES live in
+    /// <see cref="LibraryFilter"/> rather than here, so they can be tested
+    /// without a window and read against the C and Swift copies.
+    /// </summary>
+    public LibraryFilter Filter { get; } = new();
+
+    /// <summary>
+    /// Verification results, read by the "failed verification" facet and
+    /// written by the detail page's Verify button.
+    /// </summary>
+    public VerifyCache VerifyCache { get; } = new();
+
+    /// <summary>
+    /// The search box and the facets are ONE filter, so the needle is pushed
+    /// into it here rather than being a second, parallel narrowing that the
+    /// count and the empty state would each have to remember to apply.
+    /// </summary>
     public List<ArchiveEntry> FilteredEntries()
     {
-        var needle = SearchText.Trim();
-        if (needle.Length == 0) return Index.Entries;
-
-        return Index.Entries.Where(e =>
-            Contains(e.Title, needle) ||
-            Contains(e.Uploader, needle) ||
-            Contains(e.VideoId ?? "", needle) ||
-            Contains(e.Channel, needle)).ToList();
+        Filter.Needle = SearchText.Trim();
+        return Filter.Apply(Index.Entries, VerifyCache.State);
     }
 
-    /* OrdinalIgnoreCase rather than lowercasing both sides and comparing, which
-     * is what the other two ports do. Same answer for the Latin text that is
-     * most of it, no allocation per field per keystroke, and it does not depend
-     * on the machine's locale for the answer -- searching "TITLE" on a Turkish
-     * machine should find "title". */
-    private static bool Contains(string haystack, string needle)
-        => haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Whether anything at all is narrowing the library, INCLUDING the search
+    /// box. Drives the empty state, which has to tell "there is no archive
+    /// here" apart from "your filters exclude everything" -- they look
+    /// identical as an empty grid and only one of them is the user's own doing.
+    /// </summary>
+    public bool IsNarrowing => SearchText.Trim().Length > 0 || Filter.FacetCount > 0;
+
+    /// <summary>
+    /// Clear the facets AND the search box. The needle is part of the filter
+    /// as far as the user is concerned, so leaving the search box populated
+    /// after "Clear filters" would leave a term visibly applied that is not.
+    /// </summary>
+    public void ClearFilters()
+    {
+        Filter.Reset();
+        SearchText = "";
+        UpdateCounts();
+    }
+
+    /// <summary>
+    /// Remember an ordering the user chose. Called from the sort control, not
+    /// from the facet controls: a sort is a standing preference for how you
+    /// like to read a list, while a facet is a question you asked once, and an
+    /// app that reopens showing a fifth of the archive with no visible reason
+    /// is an app that looks like it lost your videos.
+    /// </summary>
+    public void PersistSort()
+    {
+        Settings.LibrarySort = SortKeys.Id(Filter.Sort);
+        Settings.LibrarySortDescending = Filter.Descending;
+        Settings.Save();
+        UpdateCounts();
+    }
+
+    /// <summary>
+    /// Record a verification result and redraw anything reading the facet.
+    /// </summary>
+    public void RecordVerification(ArchiveEntry entry, VerifyState state)
+    {
+        VerifyCache.Set(entry, state);
+        Changed?.Invoke();
+    }
 
     public ArchiveEntry? Entry(string key) => Index.Entry(key);
 }

@@ -13,6 +13,8 @@
 #include <gtk/gtk.h>
 
 #include "archive.h"
+#include "library_filter.h"
+#include "verify_cache.h"
 
 G_BEGIN_DECLS
 
@@ -26,8 +28,26 @@ GtkWidget *ytdl_library_view_new (void);
  * and call this again with NULL before freeing it. Passing NULL clears. */
 void ytdl_library_view_set_index (YtdlLibraryView *self, YtdlIndex *index);
 
-/* Case-insensitive substring over title, uploader and video id. */
-void ytdl_library_view_set_filter (YtdlLibraryView *self, const char *needle);
+/* The live filter, owned by the view.
+ *
+ * Handed out for mutation rather than wrapped in a setter per field, because
+ * the facet popover in main.c has a dozen controls and a setter each would be
+ * a dozen functions that do nothing but assign. The caller mutates and then
+ * calls ytdl_library_view_refilter. Never NULL. */
+YtdlLibraryFilter *ytdl_library_view_get_filter (YtdlLibraryView *self);
+
+/* Re-apply the filter and redraw. Cheap: nothing here touches the disk. */
+void ytdl_library_view_refilter (YtdlLibraryView *self);
+
+/* The verification cache the "failed verification" facet reads. Borrowed --
+ * the application owns it, because the detail page writes to the same one. */
+void ytdl_library_view_set_verify_cache (YtdlLibraryView *self,
+                                         YtdlVerifyCache *cache);
+
+/* Case-insensitive substring over title, uploader and video id. A shortcut
+ * for setting the filter's needle and refiltering, kept because the search
+ * entry is the one control that changes on every keystroke. */
+void ytdl_library_view_set_search (YtdlLibraryView *self, const char *needle);
 
 /* How many videos are showing after the filter. */
 guint ytdl_library_view_get_shown (YtdlLibraryView *self);

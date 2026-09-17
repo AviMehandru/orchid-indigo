@@ -28,6 +28,18 @@ typedef struct
   /* An explicitly chosen archive root, if autodetection guessed wrong. */
   char *archive_root;
   guint default_workers;
+
+  /* How the Library is ordered. Persisted as the sort key's stable ID
+   * string, never as its enum number: inserting a key in the middle would
+   * otherwise silently change what every saved setting means. NULL means the
+   * default, which library_filter.c decides -- not this file.
+   *
+   * The FACETS are deliberately not persisted. A sort is a standing
+   * preference for how you like to read a list; a facet is a question you
+   * asked once, and an app that reopens showing a fifth of the archive with
+   * no visible reason is an app that looks like it lost your videos. */
+  char    *sort_key;
+  gboolean sort_descending;
 } YtdlSettings;
 
 YtdlSettings *ytdl_settings_load (void);

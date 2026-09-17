@@ -27,6 +27,9 @@ struct LibraryView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
+                        FilterMenu()
+                    }
+                    ToolbarItem(placement: .primaryAction) {
                         Button {
                             model.startScan()
                         } label: {
@@ -53,13 +56,29 @@ struct LibraryView: View {
              * widget every macOS application uses for this, so the icon size,
              * the type scale and the vertical centring are the ones the rest of
              * the system uses rather than three guesses made here. */
-            ContentUnavailableView {
-                Label("Nothing to show", systemImage: "film.stack")
-            } description: {
-                Text(model.searchText.isEmpty
-                     ? "Point the app at the same path you would pass to `ytdl --path` on the "
-                       + "Health pane, then press Rescan."
-                     : "No video matches “\(model.searchText)”.")
+            /* The empty state has to say which of two very different things
+             * happened. "There is no archive here" and "your filters exclude
+             * everything" look identical as a blank grid, and only one of them
+             * is the user's own doing -- showing the wrong message sends
+             * someone looking for a lost archive when all they did was tick a
+             * facet. So it keys off whether the INDEX is empty, not off
+             * whether the search field is. */
+            if model.index.entries.isEmpty {
+                ContentUnavailableView {
+                    Label("Nothing to show", systemImage: "film.stack")
+                } description: {
+                    Text("Point the app at the same path you would pass to `ytdl --path` on "
+                         + "the Health pane, then press Rescan.")
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("No video matches", systemImage: "line.3.horizontal.decrease.circle")
+                } description: {
+                    Text("The archive is not empty — the current search and filters exclude "
+                         + "every video in it.")
+                } actions: {
+                    Button("Clear filters") { model.clearFilters() }
+                }
             }
         } else {
             ScrollView {
@@ -77,6 +96,111 @@ struct LibraryView: View {
                 .padding(14)
             }
         }
+    }
+}
+
+/* The sort and facet control.
+ *
+ * A Menu rather than a popover with a custom layout: on macOS a toolbar
+ * control that opens a list of toggles IS a menu, and Picker/Toggle inside one
+ * get the checkmarks, the keyboard handling and the section rules from the
+ * system rather than from three guesses made here.
+ *
+ * The count of active facets is in the LABEL, not a badge drawn on the icon.
+ * A facet still narrowing the library after the menu has been closed and
+ * forgotten is the one state this UI can get wrong in a way that reads as lost
+ * videos, so the control visibly changes while one is on.
+ */
+private struct FilterMenu: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Menu {
+            Picker("Sort by", selection: sortBinding) {
+                ForEach(SortKey.allCases) { key in
+                    Text(key.label).tag(key)
+                }
+            }
+            .pickerStyle(.inline)
+
+            Picker("Order", selection: directionBinding) {
+                Text("Newest first").tag(true)
+                Text("Oldest first").tag(false)
+            }
+            .pickerStyle(.inline)
+
+            Divider()
+
+            /* One channel is not a choice. Offering a facet whose only effect
+             * is to hide everything or nothing is worse than not offering it. */
+            if model.index.channels.count > 1 {
+                Menu("Channels") {
+                    ForEach(model.index.channels, id: \.self) { channel in
+                        Toggle(channel, isOn: channelBinding(channel))
+                    }
+                }
+            }
+
+            Section("Show only") {
+                ForEach(FacetFlags.all, id: \.rawValue) { flag in
+                    Toggle(flag.label, isOn: flagBinding(flag))
+                        .disabled(flag == .verifyFailed && model.verifyCache.knownCount == 0)
+                }
+            }
+
+            /* The verification facet has to say what it is a subset of. It can
+             * only see videos somebody has actually verified, and a facet that
+             * silently means "of the four I have checked" while looking like it
+             * means "of your whole archive" is a facet that will be believed. */
+            Text(verifyNote).font(.caption)
+
+            Divider()
+
+            Button("Clear filters") { model.clearFilters() }
+                .disabled(!model.isNarrowing)
+        } label: {
+            Label(label, systemImage: "line.3.horizontal.decrease.circle")
+        }
+        .help("Sort and filter the library")
+    }
+
+    private var label: String {
+        let n = model.filter.facetCount
+        return n > 0 ? "Filter (\(n))" : "Filter"
+    }
+
+    private var verifyNote: String {
+        let known = model.verifyCache.knownCount
+        if known == 0 {
+            return "Nothing has been verified yet. Use Verify on a video's page."
+        }
+        return "Of the \(known) video\(known == 1 ? "" : "s") verified so far."
+    }
+
+    /* The sort is persisted and the facets are not, so they get different
+     * setters rather than one that guesses. */
+    private var sortBinding: Binding<SortKey> {
+        Binding(get: { model.filter.sort },
+                set: { model.filter.sort = $0; model.persistSort() })
+    }
+
+    private var directionBinding: Binding<Bool> {
+        Binding(get: { model.filter.descending },
+                set: { model.filter.descending = $0; model.persistSort() })
+    }
+
+    private func channelBinding(_ channel: String) -> Binding<Bool> {
+        Binding(get: { model.filter.channels.contains(channel) },
+                set: { model.filter.setChannel(channel, on: $0); model.updateCounts() })
+    }
+
+    private func flagBinding(_ flag: FacetFlags) -> Binding<Bool> {
+        Binding(get: { model.filter.flags.contains(flag) },
+                set: { on in
+                    if on { model.filter.flags.insert(flag) }
+                    else { model.filter.flags.remove(flag) }
+                    model.updateCounts()
+                })
     }
 }
 
@@ -164,6 +288,15 @@ private struct VideoCard: View {
         }
         if entry.layoutTooNew {
             out.append(("newer archive layout", .warn))
+        }
+        /* A folder `ytdl --refresh` has been over. Worth a badge because it is
+         * the one case where the sidecars are newer than the media -- the
+         * comments on this video were fetched after it was archived, which is
+         * exactly the question someone re-reading an old thread is asking. */
+        if entry.refreshCount > 0 {
+            out.append((entry.refreshCount == 1
+                        ? "refreshed"
+                        : "refreshed ×\(entry.refreshCount)", .neutral))
         }
         return out
     }

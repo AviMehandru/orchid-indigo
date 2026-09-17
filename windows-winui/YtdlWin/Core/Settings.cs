@@ -33,6 +33,20 @@ public sealed class Settings
 
     public int DefaultWorkers { get; set; } = 1;
 
+    /* How the Library is ordered. Persisted as the sort key's stable ID
+     * string, never as the enum's number: inserting a key in the middle would
+     * otherwise silently change what every saved setting means.
+     *
+     * The FACETS are deliberately not persisted. A sort is a standing
+     * preference for how you like to read a list; a facet is a question you
+     * asked once, and an app that reopens showing a fifth of the archive with
+     * no visible reason is an app that looks like it lost your videos. */
+    public string LibrarySort { get; set; } = "date";
+
+    /// Newest first. An archive is added to at the newest end, so what someone
+    /// wants to see when the window opens is what arrived last.
+    public bool LibrarySortDescending { get; set; } = true;
+
     private static string Path() => Paths.Join(Paths.StateDir(), "settings.json");
 
     public static Settings Load()
@@ -44,6 +58,14 @@ public sealed class Settings
         s.DataRoot = obj.Value.Str("data_root") ?? "";
         s.ArchiveRoot = obj.Value.Str("archive_root") ?? "";
         s.DefaultWorkers = (int)Math.Max(1, obj.Value.Int("default_workers", 1));
+        s.LibrarySort = obj.Value.Str("library_sort") ?? "date";
+        /* Absent reads as TRUE rather than false, which is what a plain Bool
+         * lookup on a missing key would give: an upgrade from a settings.json
+         * written before this existed must not silently flip every Library to
+         * oldest-first. */
+        s.LibrarySortDescending = obj.Value.TryGetProperty("library_sort_descending", out _)
+            ? obj.Value.Bool("library_sort_descending")
+            : true;
         return s;
     }
 
@@ -55,6 +77,8 @@ public sealed class Settings
             w.WriteString("data_root", DataRoot);
             w.WriteString("archive_root", ArchiveRoot);
             w.WriteNumber("default_workers", DefaultWorkers);
+            w.WriteString("library_sort", LibrarySort);
+            w.WriteBoolean("library_sort_descending", LibrarySortDescending);
             w.WriteEndObject();
         });
         AtomicFile.Write(data, Path());

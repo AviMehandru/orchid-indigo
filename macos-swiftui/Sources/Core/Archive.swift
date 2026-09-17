@@ -107,6 +107,22 @@ struct ArchiveEntry: Identifiable, Hashable {
     var downloadMode: String?
     /// The manifest's media_file, folder-relative; nil when absent.
     var mediaFile: String?
+
+    /* The manifest's archive_creation_time, verbatim, or nil. Not parsed:
+     * nothing here does date arithmetic on it, and its one job is to be an
+     * opaque token that CHANGES whenever postprocess.ps1 has been over this
+     * folder again. That is what lets a derived cache -- a verification
+     * result, a parsed comment tree -- notice that `ytdl --refresh` rewrote
+     * the folder underneath it. The contract now names this explicitly. */
+    var creationStamp: String?
+
+    /* How many entries the manifest's refresh_history carries; 0 for the
+     * overwhelming majority of folders, which have never been refreshed. A
+     * count rather than the records themselves, because nothing in this app
+     * needs them and holding them would mean holding them for every video in
+     * the index. */
+    var refreshCount: Int = 0
+
     var timestamp: Int64 = -1
     var viewCount: Int64 = -1
     var duration: Double = -1
@@ -179,6 +195,34 @@ extension ArchiveEntry {
 
         /* 3. None. An ORDINARY state, not corrupt and not to be hidden. */
         return nil
+    }
+
+    /// Every byte in the video folder, including the sidecars and the
+    /// pre-merge streams.
+    ///
+    /// Deliberately the WHOLE folder rather than just the media file: this is
+    /// what the folder costs on the disk it is sitting on, which is the
+    /// question someone sorting by size is asking. A --keep-video folder is
+    /// roughly twice its media file and that is the true answer, not a
+    /// distortion. Summed from `files`, which the scan already walked, so
+    /// there is no second stat pass and this is free to call per entry on
+    /// every re-sort.
+    var totalSize: UInt64 {
+        files.reduce(UInt64(0)) { $0 &+ $1.size }
+    }
+
+    /// Whether this folder holds audio and no video.
+    ///
+    /// Asked of the MANIFEST first (`downloadMode`), then of the media file's
+    /// base name, and in that order for the reason the contract gives:
+    /// "Final Audio" is the layout-2 rename and `download_mode` is the field
+    /// consumers are told to prefer. A folder with no media at all is not
+    /// audio-only -- it is media-less, which is a different facet and a
+    /// different answer.
+    var isAudioOnly: Bool {
+        if let mode = downloadMode { return mode == "audio-only" }
+        guard let idx = mediaIndex else { return false }
+        return ArchiveEntry.basenameStartsWith(files[idx].rel, "Final Audio.")
     }
 
     /// The index into `files` of the best thumbnail, or nil.
@@ -434,6 +478,16 @@ struct ArchiveIndex {
 
         entry.mediaFile = obj.str("media_file")
         entry.downloadMode = obj.str("download_mode")
+        entry.creationStamp = obj.str("archive_creation_time")
+
+        /* refresh_history is optional and absent on nearly every folder -- it
+         * appears only once `ytdl --refresh` has re-fetched something into
+         * this one. Deliberately NOT a layout bump on the pipeline's side, so
+         * a reader that ignored it would still be correct; this one reads it
+         * because "these comments are newer than this video" is worth a
+         * badge, and because a folder that has been refreshed is a folder
+         * whose cached derivatives are stale. */
+        entry.refreshCount = obj.objects("refresh_history").count
 
         if entry.videoID == nil { entry.videoID = obj.str("video_id") }
         if let t = obj.str("title"), entry.title.isEmpty { entry.title = t }

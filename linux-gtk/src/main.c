@@ -26,12 +26,14 @@
 #include "detail_view.h"
 #include "downloads_view.h"
 #include "health_view.h"
+#include "library_filter.h"
 #include "library_view.h"
 #include "paths.h"
 #include "pipeline.h"
 #include "profiles.h"
 #include "settings.h"
 #include "style.h"
+#include "verify_cache.h"
 
 typedef struct
 {
@@ -56,6 +58,27 @@ typedef struct
   GtkWidget *status;
   GtkWidget *spinner;
 
+  /* Sort and facets. The filter itself lives in the library view; these are
+   * only the controls that drive it. */
+  YtdlVerifyCache *verify; /* owned; the library view and detail page borrow */
+  GtkWidget *filter_button;
+  GtkWidget *filter_badge;
+  GtkWidget *sort_drop;
+  GtkWidget *sort_dir;
+  GtkWidget *channel_box;   /* the check buttons, rebuilt on every scan */
+  GtkWidget *channel_frame; /* hidden entirely when there is one channel */
+  GtkWidget *date_from;
+  GtkWidget *date_to;
+  GtkWidget *flag_audio;
+  GtkWidget *flag_no_media;
+  GtkWidget *flag_layout;
+  GtkWidget *flag_verify;
+  GtkWidget *verify_note;
+  /* Set while the popover is being repopulated from the index, so the
+   * "toggled" handlers do not each kick off a rebuild against a
+   * half-rebuilt set of controls. */
+  gboolean   populating;
+
   YtdlIndex *index; /* owned; the library view borrows from it */
   char      *archive_root;
 
@@ -67,6 +90,11 @@ typedef struct
   guint    tick_id;
   gboolean scanning;
 } App;
+
+/* Both defined below, beside the rest of the facet code, and both needed by
+ * on_scan_finished, which has to sit up here with the other scan machinery. */
+static void populate_facets (App *app);
+static void apply_filter (App *app);
 
 /* A scan produces a whole new index; it is swapped in on the main thread so
  * the view is never looking at a half-built one. */
@@ -200,6 +228,12 @@ on_scan_finished (gpointer user_data)
                                    app->index);
       if (app->health != NULL)
         ytdl_health_view_set_index (YTDL_HEALTH_VIEW (app->health), app->index);
+      /* The channel facet is the ARCHIVE's channel list, so it is rebuilt
+       * from each new index. A channel that has gone away also goes out of
+       * the selection, which populate_facets does by construction: it only
+       * ever creates checks for channels the index still has. */
+      populate_facets (app);
+      apply_filter (app);
       update_counts (app);
     }
 
@@ -356,6 +390,7 @@ on_page_changed (GObject *stack, GParamSpec *pspec, gpointer user_data)
   gboolean on_library = g_strcmp0 (name, "library") == 0;
 
   gtk_widget_set_visible (app->search_button, on_library);
+  gtk_widget_set_visible (app->filter_button, on_library);
   if (!on_library)
     gtk_search_bar_set_search_mode (GTK_SEARCH_BAR (app->search_bar), FALSE);
 }
@@ -364,7 +399,7 @@ static void
 on_search_changed (GtkSearchEntry *entry, gpointer user_data)
 {
   App *app = user_data;
-  ytdl_library_view_set_filter (YTDL_LIBRARY_VIEW (app->library),
+  ytdl_library_view_set_search (YTDL_LIBRARY_VIEW (app->library),
                                 gtk_editable_get_text (GTK_EDITABLE (entry)));
   update_counts (app);
 }
@@ -373,6 +408,407 @@ static void
 on_rescan_clicked (GtkButton *button, gpointer user_data)
 {
   start_scan (user_data);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Sort and facets                                                        */
+/* ---------------------------------------------------------------------- */
+
+/* Everything a facet control does ends here: re-apply the filter, redraw the
+ * counts, and update the badge on the filter button. Routed through one
+ * function rather than each handler doing its own three things, because the
+ * badge being right is the only signal that a facet is still narrowing the
+ * library after the popover has been closed and forgotten. */
+static void
+apply_filter (App *app)
+{
+  if (app->populating)
+    return;
+
+  ytdl_library_view_refilter (YTDL_LIBRARY_VIEW (app->library));
+  update_counts (app);
+
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+  guint n = ytdl_library_filter_facet_count (f);
+  if (n > 0)
+    {
+      g_autofree char *text = g_strdup_printf ("%u", n);
+      gtk_label_set_text (GTK_LABEL (app->filter_badge), text);
+      gtk_widget_set_visible (app->filter_badge, TRUE);
+    }
+  else
+    {
+      gtk_widget_set_visible (app->filter_badge, FALSE);
+    }
+}
+
+static void
+on_sort_changed (GObject *drop, GParamSpec *pspec, gpointer user_data)
+{
+  App *app = user_data;
+  /* Guarded here as well as in apply_filter, because this handler also
+   * WRITES settings.json -- and gtk_drop_down_set_selected during a
+   * repopulate fires it. Persisting a value that was just read back from
+   * the same file is harmless; doing it once per facet rebuild is noise in
+   * a file the user can open. */
+  if (app->populating)
+    return;
+
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  guint selected = gtk_drop_down_get_selected (GTK_DROP_DOWN (drop));
+  if (selected == GTK_INVALID_LIST_POSITION)
+    return;
+  f->sort = (YtdlSortKey) selected;
+
+  /* Persisted by ID, never by the enum's number -- inserting a key in the
+   * middle would otherwise silently change what every saved setting means. */
+  g_free (app->settings->sort_key);
+  app->settings->sort_key = g_strdup (ytdl_sort_key_id (f->sort));
+  ytdl_settings_save (app->settings);
+
+  apply_filter (app);
+}
+
+static void
+on_sort_direction (GtkButton *button, gpointer user_data)
+{
+  App *app = user_data;
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  f->descending = !f->descending;
+  gtk_button_set_icon_name (button, f->descending ? "go-down-symbolic"
+                                                  : "go-up-symbolic");
+  gtk_widget_set_tooltip_text (GTK_WIDGET (button),
+                               f->descending ? "Descending" : "Ascending");
+
+  app->settings->sort_descending = f->descending;
+  ytdl_settings_save (app->settings);
+
+  apply_filter (app);
+}
+
+static void
+on_channel_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  App *app = user_data;
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+  const char *channel = g_object_get_data (G_OBJECT (check), "channel");
+  if (channel == NULL)
+    return;
+
+  ytdl_library_filter_set_channel (f, channel,
+                                   gtk_check_button_get_active (check));
+  apply_filter (app);
+}
+
+/* Accepts what people actually type. "2024-01-31" and "31/01/2024" are both
+ * reasonable things to enter into a box labelled with a date, and the filter
+ * wants the archive's own YYYYMMDD. Anything that is not eight digits after
+ * the separators come out is treated as "no bound" rather than as an error:
+ * this fires on every keystroke, so a half-typed date must narrow nothing
+ * rather than flash a validation message four times per second. */
+static char *
+normalize_date (const char *text)
+{
+  if (text == NULL)
+    return NULL;
+
+  g_autoptr (GString) digits = g_string_new (NULL);
+  for (const char *p = text; *p != '\0'; p++)
+    if (g_ascii_isdigit (*p))
+      g_string_append_c (digits, *p);
+
+  if (digits->len != 8)
+    return NULL;
+  return g_strdup (digits->str);
+}
+
+static void
+on_date_changed (GtkEditable *entry, gpointer user_data)
+{
+  App *app = user_data;
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  g_free (f->date_from);
+  g_free (f->date_to);
+  f->date_from = normalize_date (gtk_editable_get_text (
+      GTK_EDITABLE (app->date_from)));
+  f->date_to = normalize_date (gtk_editable_get_text (
+      GTK_EDITABLE (app->date_to)));
+
+  /* A bound that was typed but does not parse gets the entry marked rather
+   * than silently ignored -- otherwise "2024" in the From box looks like it
+   * is filtering and is not. */
+  const char *raw_from = gtk_editable_get_text (GTK_EDITABLE (app->date_from));
+  const char *raw_to = gtk_editable_get_text (GTK_EDITABLE (app->date_to));
+  if (*raw_from != '\0' && f->date_from == NULL)
+    gtk_widget_add_css_class (app->date_from, "error");
+  else
+    gtk_widget_remove_css_class (app->date_from, "error");
+  if (*raw_to != '\0' && f->date_to == NULL)
+    gtk_widget_add_css_class (app->date_to, "error");
+  else
+    gtk_widget_remove_css_class (app->date_to, "error");
+
+  apply_filter (app);
+}
+
+static void
+on_flag_toggled (GtkCheckButton *check, gpointer user_data)
+{
+  App *app = user_data;
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  YtdlFacetFlags bit = (YtdlFacetFlags) GPOINTER_TO_UINT (
+      g_object_get_data (G_OBJECT (check), "flag"));
+  if (gtk_check_button_get_active (check))
+    f->flags |= bit;
+  else
+    f->flags &= ~bit;
+
+  apply_filter (app);
+}
+
+static void
+on_clear_filters (GtkButton *button, gpointer user_data)
+{
+  App *app = user_data;
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  /* The needle is part of the filter and so is cleared with it, which means
+   * the search ENTRY has to be cleared too or the bar would keep showing a
+   * term that is no longer being applied. */
+  ytdl_library_filter_reset (f);
+  gtk_editable_set_text (GTK_EDITABLE (app->search), "");
+
+  populate_facets (app);
+  apply_filter (app);
+}
+
+/* Rebuild the controls from the current index and the current filter.
+ *
+ * Called after every scan, because the channel list is the archive's own, and
+ * after Clear, because a reset filter has to be visible in the controls. The
+ * `populating` guard is what stops each set_active below from kicking off its
+ * own rebuild against a half-rebuilt popover. */
+static void
+populate_facets (App *app)
+{
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  app->populating = TRUE;
+
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (app->sort_drop), (guint) f->sort);
+  gtk_button_set_icon_name (GTK_BUTTON (app->sort_dir),
+                            f->descending ? "go-down-symbolic"
+                                          : "go-up-symbolic");
+
+  gtk_editable_set_text (GTK_EDITABLE (app->date_from),
+                         f->date_from != NULL ? f->date_from : "");
+  gtk_editable_set_text (GTK_EDITABLE (app->date_to),
+                         f->date_to != NULL ? f->date_to : "");
+
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_audio),
+                               (f->flags & YTDL_FACET_AUDIO_ONLY) != 0);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_no_media),
+                               (f->flags & YTDL_FACET_NO_MEDIA) != 0);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_layout),
+                               (f->flags & YTDL_FACET_LAYOUT_TOO_NEW) != 0);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_verify),
+                               (f->flags & YTDL_FACET_VERIFY_FAILED) != 0);
+
+  /* The verification facet has to say what it is a subset of. It can only
+   * see videos somebody has actually verified, and a facet that silently
+   * means "of the four I have checked" while looking like it means "of your
+   * whole archive" is a facet that will be believed. */
+  guint known = app->verify != NULL ? ytdl_verify_cache_known (app->verify) : 0;
+  if (known == 0)
+    {
+      gtk_label_set_text (
+          GTK_LABEL (app->verify_note),
+          "Nothing has been verified yet. Use Verify on a video's page.");
+      gtk_widget_set_sensitive (app->flag_verify, FALSE);
+    }
+  else
+    {
+      g_autofree char *note = g_strdup_printf (
+          "Of the %u video%s verified so far.", known, known == 1 ? "" : "s");
+      gtk_label_set_text (GTK_LABEL (app->verify_note), note);
+      gtk_widget_set_sensitive (app->flag_verify, TRUE);
+    }
+
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child (app->channel_box)) != NULL)
+    gtk_box_remove (GTK_BOX (app->channel_box), child);
+
+  guint channels = app->index != NULL ? app->index->channels->len : 0;
+  for (guint i = 0; i < channels; i++)
+    {
+      const char *name = g_ptr_array_index (app->index->channels, i);
+      GtkWidget *check = gtk_check_button_new_with_label (name);
+      gtk_check_button_set_active (GTK_CHECK_BUTTON (check),
+                                   ytdl_library_filter_has_channel (f, name));
+      g_object_set_data_full (G_OBJECT (check), "channel", g_strdup (name),
+                              g_free);
+      g_signal_connect (check, "toggled", G_CALLBACK (on_channel_toggled),
+                        app);
+      gtk_box_append (GTK_BOX (app->channel_box), check);
+    }
+
+  /* One channel is not a choice. Offering a facet whose only effect is to
+   * hide everything or nothing is worse than not offering it. */
+  gtk_widget_set_visible (app->channel_frame, channels > 1);
+
+  app->populating = FALSE;
+}
+
+static GtkWidget *
+facet_heading (const char *text)
+{
+  GtkWidget *label = gtk_label_new (text);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0f);
+  gtk_widget_add_css_class (label, "heading");
+  gtk_widget_set_margin_top (label, 6);
+  return label;
+}
+
+static GtkWidget *
+flag_check (App *app, const char *label, YtdlFacetFlags flag)
+{
+  GtkWidget *check = gtk_check_button_new_with_label (label);
+  g_object_set_data (G_OBJECT (check), "flag", GUINT_TO_POINTER (flag));
+  g_signal_connect (check, "toggled", G_CALLBACK (on_flag_toggled), app);
+  return check;
+}
+
+static GtkWidget *
+build_filter_popover (App *app)
+{
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_margin_start (box, 12);
+  gtk_widget_set_margin_end (box, 12);
+  gtk_widget_set_margin_top (box, 12);
+  gtk_widget_set_margin_bottom (box, 12);
+  gtk_widget_set_size_request (box, 300, -1);
+
+  /* --- Sort ------------------------------------------------------- */
+  gtk_box_append (GTK_BOX (box), facet_heading ("Sort by"));
+
+  /* The labels come from library_filter.c rather than being written here,
+   * so the dropdown's ORDER is the enum's order by construction. A list
+   * typed out again in this file would be a second place for a new key to
+   * have to be added, and the failure would be a dropdown that silently
+   * selects the wrong sort. */
+  const char *labels[YTDL_N_SORT_KEYS + 1];
+  for (int i = 0; i < YTDL_N_SORT_KEYS; i++)
+    labels[i] = ytdl_sort_key_label ((YtdlSortKey) i);
+  labels[YTDL_N_SORT_KEYS] = NULL;
+
+  app->sort_drop = gtk_drop_down_new_from_strings (labels);
+  gtk_widget_set_hexpand (app->sort_drop, TRUE);
+  g_signal_connect (app->sort_drop, "notify::selected",
+                    G_CALLBACK (on_sort_changed), app);
+
+  app->sort_dir = gtk_button_new_from_icon_name ("view-sort-descending-symbolic");
+  gtk_widget_set_tooltip_text (app->sort_dir, "Descending");
+  g_signal_connect (app->sort_dir, "clicked", G_CALLBACK (on_sort_direction),
+                    app);
+
+  GtkWidget *sort_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_box_append (GTK_BOX (sort_row), app->sort_drop);
+  gtk_box_append (GTK_BOX (sort_row), app->sort_dir);
+  gtk_box_append (GTK_BOX (box), sort_row);
+
+  /* --- Channels --------------------------------------------------- */
+  app->channel_frame = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_box_append (GTK_BOX (app->channel_frame), facet_heading ("Channels"));
+
+  app->channel_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+
+  /* Scrolled and height-capped: an archive of two hundred channels would
+   * otherwise produce a popover taller than the screen, which GTK will
+   * happily try to draw. */
+  GtkWidget *channel_scroll = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (channel_scroll),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_max_content_height (
+      GTK_SCROLLED_WINDOW (channel_scroll), 220);
+  gtk_scrolled_window_set_propagate_natural_height (
+      GTK_SCROLLED_WINDOW (channel_scroll), TRUE);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (channel_scroll),
+                                 app->channel_box);
+  gtk_box_append (GTK_BOX (app->channel_frame), channel_scroll);
+  gtk_box_append (GTK_BOX (box), app->channel_frame);
+
+  /* --- Dates ------------------------------------------------------ */
+  gtk_box_append (GTK_BOX (box), facet_heading ("Uploaded between"));
+
+  app->date_from = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (app->date_from), "From");
+  gtk_entry_set_max_length (GTK_ENTRY (app->date_from), 10);
+  gtk_widget_set_hexpand (app->date_from, TRUE);
+  g_signal_connect (app->date_from, "changed", G_CALLBACK (on_date_changed),
+                    app);
+
+  app->date_to = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (app->date_to), "To");
+  gtk_entry_set_max_length (GTK_ENTRY (app->date_to), 10);
+  gtk_widget_set_hexpand (app->date_to, TRUE);
+  g_signal_connect (app->date_to, "changed", G_CALLBACK (on_date_changed),
+                    app);
+
+  GtkWidget *dates = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_box_append (GTK_BOX (dates), app->date_from);
+  gtk_box_append (GTK_BOX (dates), app->date_to);
+  gtk_box_append (GTK_BOX (box), dates);
+
+  GtkWidget *date_hint = gtk_label_new ("YYYYMMDD, or any form of it.");
+  gtk_label_set_xalign (GTK_LABEL (date_hint), 0.0f);
+  gtk_widget_add_css_class (date_hint, "dim-label");
+  gtk_widget_add_css_class (date_hint, "caption");
+  gtk_box_append (GTK_BOX (box), date_hint);
+
+  /* --- Flags ------------------------------------------------------ */
+  gtk_box_append (GTK_BOX (box), facet_heading ("Show only"));
+
+  app->flag_audio = flag_check (app, "Audio only", YTDL_FACET_AUDIO_ONLY);
+  app->flag_no_media = flag_check (app, "No media file", YTDL_FACET_NO_MEDIA);
+  app->flag_layout =
+      flag_check (app, "Newer archive layout", YTDL_FACET_LAYOUT_TOO_NEW);
+  app->flag_verify =
+      flag_check (app, "Failed verification", YTDL_FACET_VERIFY_FAILED);
+
+  gtk_box_append (GTK_BOX (box), app->flag_audio);
+  gtk_box_append (GTK_BOX (box), app->flag_no_media);
+  gtk_box_append (GTK_BOX (box), app->flag_layout);
+  gtk_box_append (GTK_BOX (box), app->flag_verify);
+
+  app->verify_note = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (app->verify_note), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (app->verify_note), TRUE);
+  gtk_widget_add_css_class (app->verify_note, "dim-label");
+  gtk_widget_add_css_class (app->verify_note, "caption");
+  gtk_widget_set_margin_start (app->verify_note, 28);
+  gtk_box_append (GTK_BOX (box), app->verify_note);
+
+  /* --- Clear ------------------------------------------------------ */
+  GtkWidget *clear = gtk_button_new_with_label ("Clear filters");
+  gtk_widget_set_margin_top (clear, 6);
+  g_signal_connect (clear, "clicked", G_CALLBACK (on_clear_filters), app);
+  gtk_box_append (GTK_BOX (box), clear);
+
+  GtkWidget *popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (popover), box);
+  return popover;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -402,12 +838,74 @@ build_main_page (App *app)
                                "Search the library (Ctrl+F)");
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->search_button);
 
+  /* --- sort and facets --------------------------------------------- */
+  /* ON ICON NAMES, because this cost a round of rework and the lesson is
+   * not obvious. On Ubuntu 24.04 -- adwaita-icon-theme 46, GTK 4.14, which
+   * is this app's stated version floor -- a number of perfectly ordinary
+   * symbolic names DO NOT RENDER. They are present as files, and
+   * gtk_icon_theme_has_icon returns TRUE for them, and the widget still
+   * draws the broken-image glyph. view-filter-symbolic and funnel-symbolic
+   * are absent outright; preferences-other-symbolic, view-sort-ascending-
+   * symbolic and view-sort-descending-symbolic are present, claimed, and
+   * broken.
+   *
+   * So the rule for this file is: an icon name goes in only after it has
+   * been seen to DRAW, not after has_icon agreed it exists. view-list and
+   * go-up/go-down were picked that way.
+   *
+   * Note applications-utilities-symbolic, on the Health page below, is one
+   * of the broken ones and predates this change. Left alone here rather
+   * than fixed in passing, because it is not what this patch is about. */
+  /* How many facets are active has to be visible from the header, because a
+   * facet that is still narrowing the library after the popover has been
+   * closed and forgotten is the one state this UI can get wrong in a way
+   * that reads as lost videos.
+   *
+   * The count sits BESIDE the icon, inside the button, rather than as a
+   * badge overlaid on its corner. The overlay was tried first and looked
+   * right in the code: a GtkOverlay sizes itself to its child, so the
+   * "badge" was drawn inside the button's own 34 pixels, directly on top of
+   * the icon -- a digit superimposed on a glyph, which reads as a rendering
+   * fault rather than as a count. Seen in a screenshot, not reasoned about.
+   * A button that grows by one character when a filter is on is also the
+   * more honest affordance: the button visibly changes. */
+  app->filter_button = gtk_menu_button_new ();
+  gtk_widget_set_tooltip_text (app->filter_button, "Sort and filter");
+
+  app->filter_badge = gtk_label_new (NULL);
+  gtk_widget_set_visible (app->filter_badge, FALSE);
+  gtk_widget_add_css_class (app->filter_badge, "numeric");
+
+  GtkWidget *filter_content = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+  gtk_box_append (GTK_BOX (filter_content),
+                  gtk_image_new_from_icon_name ("view-list-symbolic"));
+  gtk_box_append (GTK_BOX (filter_content), app->filter_badge);
+  gtk_menu_button_set_child (GTK_MENU_BUTTON (app->filter_button),
+                             filter_content);
+
+  gtk_menu_button_set_popover (GTK_MENU_BUTTON (app->filter_button),
+                               build_filter_popover (app));
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->filter_button);
+
   /* --- the three pages -------------------------------------------- */
   app->stack = adw_view_stack_new ();
 
   app->library = ytdl_library_view_new ();
   g_signal_connect (app->library, "video-activated",
                     G_CALLBACK (on_video_activated), app);
+
+  /* The saved ordering, before the first scan so the first grid ever drawn
+   * is already in the order this user chose. The FACETS deliberately do not
+   * persist -- see settings.h: an app that reopens showing a fifth of the
+   * archive with no visible reason looks like it lost your videos. */
+  {
+    YtdlLibraryFilter *f =
+        ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+    f->sort = ytdl_sort_key_from_id (app->settings->sort_key);
+    f->descending = app->settings->sort_descending;
+  }
+  ytdl_library_view_set_verify_cache (YTDL_LIBRARY_VIEW (app->library),
+                                      app->verify);
   adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
                                        app->library, "library", "Library",
                                        "view-grid-symbolic");
@@ -551,6 +1049,9 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
       ADW_APPLICATION_WINDOW (app->window), bp);
 
   on_page_changed (G_OBJECT (app->stack), NULL, app);
+  /* Before the first scan, so the popover is never briefly a set of empty
+   * controls with a channel list that has not been built yet. */
+  populate_facets (app);
   gtk_window_present (GTK_WINDOW (app->window));
 
   /* The worker starts only once the window it will emit into is real, which
@@ -599,6 +1100,11 @@ main (int argc, char **argv)
 
   app.runner = ytdl_runner_new ();
 
+  /* Loaded before any window exists, because build_main_page hands it
+   * straight to the library view. Never fails: a missing or corrupt store
+   * yields an empty cache, which costs one re-verify. */
+  app.verify = ytdl_verify_cache_load ();
+
   /* --archive-root, then the root chosen on the Health pane, then the usual
    * locations. The middle one used to be missing: settings.json carried an
    * archive_root that nothing read and nothing could write, so a machine
@@ -628,6 +1134,12 @@ main (int argc, char **argv)
    * would otherwise touch state that has already been freed. */
   ytdl_runner_stop (app.runner);
   g_clear_object (&app.runner);
+  /* Written once, on the way out, rather than after every verify: this is a
+   * cache, the only cost of losing the last few results is re-hashing those
+   * folders, and a JSON rewrite per verification would be the more
+   * expensive mistake. */
+  ytdl_verify_cache_save (app.verify);
+  g_clear_pointer (&app.verify, ytdl_verify_cache_free);
   g_clear_pointer (&app.settings, ytdl_settings_free);
   g_clear_pointer (&app.index, ytdl_index_free);
   g_free (app.archive_root);

@@ -54,9 +54,19 @@ public sealed class VideoCardModel
         /* Not an error. --mode metadata-only, comments-only and subs-only all
          * write a complete folder with no media, and so does an interrupted
          * run. Saying WHICH is the manifest's job, not a guess from here. */
+        /* One pill, so this is a priority order rather than a list, and the
+         * order is by how much the fact changes what the folder IS. A missing
+         * media file first: it is the difference between a video and a
+         * metadata stub. Then a layout this reader cannot fully understand.
+         * Then a refresh, which is worth saying -- it is the one case where the
+         * sidecars are newer than the media, so the comments on this video were
+         * fetched after it was archived -- but never at the cost of hiding
+         * either of the two above it. */
         var badge = "";
         if (e.MediaIndex < 0) badge = e.DownloadMode ?? "no media file";
         else if (e.LayoutTooNew) badge = "newer archive layout";
+        else if (e.RefreshCount == 1) badge = "refreshed";
+        else if (e.RefreshCount > 1) badge = $"refreshed ×{e.RefreshCount}";
 
         return new VideoCardModel
         {
@@ -82,10 +92,143 @@ public sealed partial class LibraryPage : Page
         Grid_.ItemsSource = _items;
     }
 
+    // ---------------------------------------------------------------- //
+    // Sort and facets                                                  //
+    // ---------------------------------------------------------------- //
+
+    /* Built in code rather than declared in XAML, and rebuilt on every scan,
+     * because the channel list is the ARCHIVE's: it changes when the archive
+     * does. A declared flyout with an ItemsSource binding would need an
+     * observable layer over a list that is replaced wholesale a few times a
+     * session, to say what one rebuild says directly. */
+    private void RebuildFilterFlyout()
+    {
+        var f = Model.Filter;
+        var flyout = new MenuFlyout();
+
+        var sortMenu = new MenuFlyoutSubItem { Text = "Sort by" };
+        foreach (var key in SortKeys.All)
+        {
+            var captured = key;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = SortKeys.Label(key),
+                IsChecked = f.Sort == key,
+            };
+            item.Click += (_, _) =>
+            {
+                f.Sort = captured;
+                Model.PersistSort();
+                RebuildFilterFlyout();
+                RefreshGrid();
+            };
+            sortMenu.Items.Add(item);
+        }
+        flyout.Items.Add(sortMenu);
+
+        var order = new ToggleMenuFlyoutItem
+        {
+            Text = "Newest first",
+            IsChecked = f.Descending,
+        };
+        order.Click += (_, _) =>
+        {
+            f.Descending = !f.Descending;
+            Model.PersistSort();
+            RebuildFilterFlyout();
+            RefreshGrid();
+        };
+        flyout.Items.Add(order);
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        /* One channel is not a choice. Offering a facet whose only effect is
+         * to hide everything or nothing is worse than not offering it. */
+        if (Model.Index.Channels.Count > 1)
+        {
+            var channels = new MenuFlyoutSubItem { Text = "Channels" };
+            foreach (var channel in Model.Index.Channels)
+            {
+                var captured = channel;
+                var item = new ToggleMenuFlyoutItem
+                {
+                    Text = channel,
+                    IsChecked = f.Channels.Contains(channel),
+                };
+                item.Click += (_, _) =>
+                {
+                    f.SetChannel(captured, !f.Channels.Contains(captured));
+                    RebuildFilterFlyout();
+                    RefreshGrid();
+                };
+                channels.Items.Add(item);
+            }
+            flyout.Items.Add(channels);
+        }
+
+        foreach (var flag in Facets.All)
+        {
+            var captured = flag;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = Facets.Label(flag),
+                IsChecked = f.Flags.HasFlag(flag),
+                /* The verification facet can only see videos somebody has
+                 * actually verified. With none verified it would silently
+                 * match nothing, which reads as a broken control rather than
+                 * as an empty answer -- so it is disabled and the reason is
+                 * spelled out in the item below. */
+                IsEnabled = flag != FacetFlags.VerifyFailed || Model.VerifyCache.KnownCount > 0,
+            };
+            item.Click += (_, _) =>
+            {
+                if (f.Flags.HasFlag(captured)) f.Flags &= ~captured;
+                else f.Flags |= captured;
+                RebuildFilterFlyout();
+                RefreshGrid();
+            };
+            flyout.Items.Add(item);
+        }
+
+        /* The verification facet has to say what it is a subset of. A facet
+         * that silently means "of the four I have checked" while looking like
+         * it means "of your whole archive" is a facet that will be believed. */
+        var known = Model.VerifyCache.KnownCount;
+        flyout.Items.Add(new MenuFlyoutItem
+        {
+            Text = known == 0
+                ? "Nothing verified yet — use Verify on a video's page"
+                : $"Of the {known} video{(known == 1 ? "" : "s")} verified so far",
+            IsEnabled = false,
+        });
+
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        var clear = new MenuFlyoutItem { Text = "Clear filters", IsEnabled = Model.IsNarrowing };
+        clear.Click += OnClearFilters;
+        flyout.Items.Add(clear);
+
+        FilterButton.Flyout = flyout;
+
+        var n = f.FacetCount;
+        FilterLabel.Text = n > 0 ? $"Filter ({n})" : "Filter";
+    }
+
+    private void OnClearFilters(object sender, RoutedEventArgs e)
+    {
+        Model.ClearFilters();
+        /* The search box lives on the window, not on this page, so clearing
+         * the model's SearchText has to be reflected there too or the box
+         * would keep showing a term that is no longer applied. */
+        App.Window?.SyncSearchBox();
+        RebuildFilterFlyout();
+        RefreshGrid();
+    }
+
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
         Model.Changed += OnModelChanged;
+        RebuildFilterFlyout();
         RefreshGrid();
     }
 
@@ -103,7 +246,14 @@ public sealed partial class LibraryPage : Page
     private void OnModelChanged()
     {
         RescanButton.IsEnabled = !Model.Scanning;
-        if (!Model.Scanning) RefreshGrid();
+        if (Model.Scanning) return;
+
+        /* The channel facet is the ARCHIVE's channel list, so the flyout is
+         * rebuilt from each new index. A channel that has gone away also goes
+         * out of the offered set by construction: the rebuild only ever
+         * creates items for channels the index still has. */
+        RebuildFilterFlyout();
+        RefreshGrid();
     }
 
     /// Rebuild the grid from the current filter. Called by the window when the
@@ -119,10 +269,35 @@ public sealed partial class LibraryPage : Page
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         Grid_.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
 
-        EmptyDetail.Text = Model.SearchText.Trim().Length == 0
-            ? "Point the app at the same path you would pass to `ytdl --path` on the Health " +
-              "pane, then press Rescan."
-            : $"No video matches “{Model.SearchText}”.";
+        /* The empty state has to say which of two very different things
+         * happened. "There is no archive here" and "your filters exclude
+         * everything" look identical as an empty grid, and only one of them is
+         * the user's own doing -- showing the wrong message sends someone
+         * looking for a lost archive when all they did was tick a facet. So it
+         * keys off whether the INDEX is empty, not off whether the search box
+         * is. */
+        var archiveHasVideos = Model.Index.Entries.Count > 0;
+        if (empty && archiveHasVideos)
+        {
+            EmptyIcon.Glyph = "";
+            EmptyTitle.Text = "No video matches";
+            EmptyDetail.Text =
+                "The archive is not empty — the current search and filters exclude every " +
+                "video in it.";
+            EmptyClear.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            EmptyIcon.Glyph = "";
+            EmptyTitle.Text = "Nothing to show";
+            EmptyDetail.Text =
+                "Point the app at the same path you would pass to `ytdl --path` on the Health " +
+                "pane, then press Rescan.";
+            EmptyClear.Visibility = Visibility.Collapsed;
+        }
+
+        var n = Model.Filter.FacetCount;
+        FilterLabel.Text = n > 0 ? $"Filter ({n})" : "Filter";
     }
 
     private void OnRescan(object sender, RoutedEventArgs e) => Model.StartScan();

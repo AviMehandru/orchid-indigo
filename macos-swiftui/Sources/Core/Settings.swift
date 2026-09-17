@@ -23,6 +23,19 @@ final class Settings: ObservableObject {
     @Published var archiveRoot: String = ""
     @Published var defaultWorkers: Int = 1
 
+    /* How the Library is ordered. Persisted as the sort key's stable ID
+     * string, never as its case position: inserting a key in the middle would
+     * otherwise silently change what every saved setting means.
+     *
+     * The FACETS are deliberately not persisted. A sort is a standing
+     * preference for how you like to read a list; a facet is a question you
+     * asked once, and an app that reopens showing a fifth of the archive with
+     * no visible reason is an app that looks like it lost your videos. */
+    @Published var librarySort: String = SortKey.date.rawValue
+    /// Newest first. An archive is added to at the newest end, so what someone
+    /// wants to see when the window opens is what arrived last.
+    @Published var librarySortDescending: Bool = true
+
     private static func path() -> String {
         Paths.join(Paths.stateDir(), "settings.json")
     }
@@ -33,6 +46,14 @@ final class Settings: ObservableObject {
         s.dataRoot = obj.str("data_root") ?? ""
         s.archiveRoot = obj.str("archive_root") ?? ""
         s.defaultWorkers = max(1, Int(obj.int("default_workers", default: 1)))
+        s.librarySort = obj.str("library_sort") ?? SortKey.date.rawValue
+        /* Absent reads as TRUE rather than false, which is what a plain
+         * bool lookup on a missing key would give: an upgrade from a
+         * settings.json written before this existed must not silently flip
+         * every Library to oldest-first. */
+        s.librarySortDescending = obj["library_sort_descending"] == nil
+            ? true
+            : obj.bool("library_sort_descending")
         return s
     }
 
@@ -41,6 +62,8 @@ final class Settings: ObservableObject {
             "data_root": dataRoot,
             "archive_root": archiveRoot,
             "default_workers": defaultWorkers,
+            "library_sort": librarySort,
+            "library_sort_descending": librarySortDescending,
         ]
         AtomicFile.write(JSONFile.data(from: obj), to: Settings.path())
     }

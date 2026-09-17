@@ -520,6 +520,11 @@ void ytdl_register_paths_tests (void);
  * assertion that they agree. */
 void ytdl_register_url_probe_tests (void);
 
+/* Defined in test_library.c -- the Library's sort and facet rules, and the
+ * verification cache that the "failed verification" facet reads. Its fixture
+ * VALUES are shared with the macOS and Windows suites. */
+void ytdl_register_library_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -554,6 +559,7 @@ main (int argc, char **argv)
   ytdl_register_profile_tests ();
   ytdl_register_paths_tests ();
   ytdl_register_url_probe_tests ();
+  ytdl_register_library_tests ();
 
   return g_test_run ();
 }

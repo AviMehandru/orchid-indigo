@@ -81,6 +81,7 @@ ytdl_entry_free (gpointer data)
   g_free (e->original_url);
   g_free (e->download_mode);
   g_free (e->media_file);
+  g_free (e->creation_stamp);
   g_clear_pointer (&e->files, g_ptr_array_unref);
   g_free (e);
 }
@@ -183,6 +184,15 @@ object_member (JsonObject *obj, const char *name)
     return NULL;
   JsonNode *node = json_object_get_member (obj, name);
   return JSON_NODE_HOLDS_OBJECT (node) ? json_node_get_object (node) : NULL;
+}
+
+static JsonArray *
+array_member (JsonObject *obj, const char *name)
+{
+  if (obj == NULL || !json_object_has_member (obj, name))
+    return NULL;
+  JsonNode *node = json_object_get_member (obj, name);
+  return JSON_NODE_HOLDS_ARRAY (node) ? json_node_get_array (node) : NULL;
 }
 
 static char *
@@ -435,6 +445,46 @@ ytdl_entry_thumbnail_index (const YtdlEntry *entry)
   return best;
 }
 
+guint64
+ytdl_entry_total_size (const YtdlEntry *entry)
+{
+  g_return_val_if_fail (entry != NULL, 0);
+  if (entry->files == NULL)
+    return 0;
+
+  guint64 total = 0;
+  for (guint i = 0; i < entry->files->len; i++)
+    {
+      const YtdlFile *f = g_ptr_array_index (entry->files, i);
+      total += f->size;
+    }
+  return total;
+}
+
+gboolean
+ytdl_entry_is_audio_only (const YtdlEntry *entry)
+{
+  g_return_val_if_fail (entry != NULL, FALSE);
+
+  /* The manifest, when it has an opinion. This is the field the contract
+   * tells consumers to prefer, and it is right even in the awkward case
+   * where a folder was written audio-only and the file has since been
+   * renamed by hand. */
+  if (entry->download_mode != NULL)
+    return g_strcmp0 (entry->download_mode, "audio-only") == 0;
+
+  /* Otherwise the media file's BASE NAME -- "Final Audio" is the layout-2
+   * rename that made the layout version go to 2 in the first place. Not the
+   * extension: a .webm can be either, which is exactly the trap the rename
+   * exists to avoid. */
+  gssize mi = ytdl_entry_media_index (entry);
+  if (mi < 0)
+    return FALSE; /* media-less is its own state, not audio-only */
+
+  const YtdlFile *f = g_ptr_array_index (entry->files, (guint) mi);
+  return basename_starts_with (f->rel, "Final Audio.");
+}
+
 char *
 ytdl_entry_path_for_index (const YtdlEntry *entry, gsize idx)
 {
@@ -482,6 +532,19 @@ apply_manifest (YtdlEntry *entry, const char *meta_dir)
 
   entry->media_file = string_member (obj, "media_file");
   entry->download_mode = string_member (obj, "download_mode");
+  entry->creation_stamp = string_member (obj, "archive_creation_time");
+
+  /* refresh_history is optional and absent on nearly every folder -- it
+   * appears only once `ytdl --refresh` has re-fetched something into this
+   * one. Deliberately NOT a layout bump on the pipeline's side, so a reader
+   * that ignored it would still be correct; this one reads it because
+   * "these comments are newer than this video" is worth a badge, and
+   * because a folder that has been refreshed is a folder whose cached
+   * derivatives are stale. */
+  JsonArray *refreshed = array_member (obj, "refresh_history");
+  entry->refresh_count = refreshed != NULL
+                             ? (guint) json_array_get_length (refreshed)
+                             : 0;
 
   if (entry->id == NULL)
     entry->id = string_member (obj, "video_id");

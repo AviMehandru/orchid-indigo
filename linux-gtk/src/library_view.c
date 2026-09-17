@@ -61,7 +61,12 @@ struct _YtdlLibraryView
   GListStore *store;
 
   YtdlIndex *index; /* borrowed */
-  char      *needle;
+
+  /* Owned. Every narrowing and ordering decision lives here rather than in
+   * this file, so the rules are testable without a window and readable
+   * against the Swift and C# copies. */
+  YtdlLibraryFilter *filter;
+  YtdlVerifyCache   *verify; /* borrowed; the application owns it */
 
   /* path -> GdkTexture. Thumbnails are decoded once and reused as the grid
    * recycles rows past them; without this a scroll re-decodes a JPEG per
@@ -291,26 +296,55 @@ on_bind_item (GtkSignalListItemFactory *factory, GtkListItem *item,
     }
   if (e->layout_too_new)
     add_badge (badges, "newer archive layout", "warn");
+
+  /* A folder `ytdl --refresh` has been over. Worth a badge because it is the
+   * one case where the sidecars are newer than the media -- the comments on
+   * this video were fetched after it was archived, which is exactly the
+   * question someone re-reading an old thread is asking. */
+  if (e->refresh_count > 0)
+    {
+      g_autofree char *label =
+          e->refresh_count == 1
+              ? g_strdup ("refreshed")
+              : g_strdup_printf ("refreshed ×%u", e->refresh_count);
+      add_badge (badges, label, NULL);
+    }
 }
 
 /* ---------------------------------------------------------------------- */
 
-static gboolean
-matches (const YtdlEntry *e, const char *needle_folded)
+/* The empty state has to say which of two very different things happened.
+ * "There is no archive here" and "your filters exclude everything" look
+ * identical as a blank grid, and only one of them is the user's own doing --
+ * showing the wrong message sends someone looking for a lost archive when
+ * all they did was tick a facet. */
+static void
+update_empty_state (YtdlLibraryView *self, gboolean have_videos)
 {
-  if (needle_folded == NULL || *needle_folded == '\0')
-    return TRUE;
+  gboolean narrowed = ytdl_library_filter_is_narrowing (self->filter);
 
-  const char *fields[] = { e->title, e->uploader, e->id, e->channel };
-  for (gsize i = 0; i < G_N_ELEMENTS (fields); i++)
+  if (have_videos && narrowed)
     {
-      if (fields[i] == NULL)
-        continue;
-      g_autofree char *folded = g_utf8_casefold (fields[i], -1);
-      if (strstr (folded, needle_folded) != NULL)
-        return TRUE;
+      adw_status_page_set_icon_name (ADW_STATUS_PAGE (self->empty),
+                                     "funnel-symbolic");
+      adw_status_page_set_title (ADW_STATUS_PAGE (self->empty),
+                                 "No video matches");
+      adw_status_page_set_description (
+          ADW_STATUS_PAGE (self->empty),
+          "The archive is not empty — the current search and filters exclude "
+          "every video in it. Clear them from the filter button.");
     }
-  return FALSE;
+  else
+    {
+      adw_status_page_set_icon_name (ADW_STATUS_PAGE (self->empty),
+                                     "folder-videos-symbolic");
+      adw_status_page_set_title (ADW_STATUS_PAGE (self->empty),
+                                 "Nothing to show");
+      adw_status_page_set_description (
+          ADW_STATUS_PAGE (self->empty),
+          "Point the app at the same path you would pass to "
+          "<tt>ytdl --path</tt>, then press Rescan.");
+    }
 }
 
 static void
@@ -318,27 +352,31 @@ rebuild (YtdlLibraryView *self)
 {
   g_list_store_remove_all (self->store);
 
-  g_autofree char *folded =
-      (self->needle != NULL && *self->needle != '\0')
-          ? g_utf8_casefold (self->needle, -1)
-          : NULL;
+  g_autoptr (GPtrArray) shown = ytdl_library_filter_apply (
+      self->filter, self->index,
+      self->verify != NULL ? ytdl_verify_cache_lookup : NULL, self->verify);
 
-  guint shown = 0;
-  if (self->index != NULL)
+  for (guint i = 0; i < shown->len; i++)
     {
-      for (guint i = 0; i < self->index->entries->len; i++)
-        {
-          const YtdlEntry *e = g_ptr_array_index (self->index->entries, i);
-          if (!matches (e, folded))
-            continue;
-          g_autoptr (YtdlVideoObject) obj = ytdl_video_object_new (e);
-          g_list_store_append (self->store, obj);
-          shown++;
-        }
+      g_autoptr (YtdlVideoObject) obj =
+          ytdl_video_object_new (g_ptr_array_index (shown, i));
+      g_list_store_append (self->store, obj);
     }
 
+  gboolean have_videos =
+      self->index != NULL && self->index->entries->len > 0;
+  update_empty_state (self, have_videos);
+
   gtk_stack_set_visible_child_name (GTK_STACK (self->stack),
-                                    shown > 0 ? "grid" : "empty");
+                                    shown->len > 0 ? "grid" : "empty");
+
+  /* Back to the top. After a re-sort the scroll offset is meaningless -- it
+   * points at whatever happens to be at that pixel now, which is not where
+   * the user was. */
+  GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment (
+      GTK_SCROLLED_WINDOW (self->scroller));
+  if (adj != NULL)
+    gtk_adjustment_set_value (adj, 0.0);
 }
 
 void
@@ -355,12 +393,35 @@ ytdl_library_view_set_index (YtdlLibraryView *self, YtdlIndex *index)
   rebuild (self);
 }
 
+YtdlLibraryFilter *
+ytdl_library_view_get_filter (YtdlLibraryView *self)
+{
+  g_return_val_if_fail (YTDL_IS_LIBRARY_VIEW (self), NULL);
+  return self->filter;
+}
+
 void
-ytdl_library_view_set_filter (YtdlLibraryView *self, const char *needle)
+ytdl_library_view_refilter (YtdlLibraryView *self)
 {
   g_return_if_fail (YTDL_IS_LIBRARY_VIEW (self));
-  g_free (self->needle);
-  self->needle = g_strdup (needle);
+  rebuild (self);
+}
+
+void
+ytdl_library_view_set_verify_cache (YtdlLibraryView *self,
+                                    YtdlVerifyCache *cache)
+{
+  g_return_if_fail (YTDL_IS_LIBRARY_VIEW (self));
+  self->verify = cache;
+  rebuild (self);
+}
+
+void
+ytdl_library_view_set_search (YtdlLibraryView *self, const char *needle)
+{
+  g_return_if_fail (YTDL_IS_LIBRARY_VIEW (self));
+  g_free (self->filter->needle);
+  self->filter->needle = g_strdup (needle);
   rebuild (self);
 }
 
@@ -375,8 +436,9 @@ static void
 ytdl_library_view_dispose (GObject *object)
 {
   YtdlLibraryView *self = YTDL_LIBRARY_VIEW (object);
-  g_clear_pointer (&self->needle, g_free);
+  g_clear_pointer (&self->filter, ytdl_library_filter_free);
   g_clear_pointer (&self->thumbs, g_hash_table_destroy);
+  self->verify = NULL;
   g_clear_object (&self->store);
   self->index = NULL;
   G_OBJECT_CLASS (ytdl_library_view_parent_class)->dispose (object);
@@ -411,6 +473,7 @@ ytdl_library_view_init (YtdlLibraryView *self)
                                   GTK_ORIENTATION_VERTICAL);
 
   self->store = g_list_store_new (YTDL_TYPE_VIDEO_OBJECT);
+  self->filter = ytdl_library_filter_new ();
   self->thumbs = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
                                         g_object_unref);
 
@@ -443,10 +506,13 @@ ytdl_library_view_init (YtdlLibraryView *self)
                                  "folder-videos-symbolic");
   adw_status_page_set_title (ADW_STATUS_PAGE (self->empty),
                              "Nothing to show");
+  /* Replaced on every rebuild by update_empty_state, which is what tells
+   * "there is no archive" apart from "your filters exclude everything". This
+   * is only what shows before the first scan finishes. */
   adw_status_page_set_description (
       ADW_STATUS_PAGE (self->empty),
       "Point the app at the same path you would pass to <tt>ytdl --path</tt>, "
-      "then press Rescan. If a search is active, no video matches it.");
+      "then press Rescan.");
   gtk_widget_set_vexpand (self->empty, TRUE);
 
   self->stack = gtk_stack_new ();

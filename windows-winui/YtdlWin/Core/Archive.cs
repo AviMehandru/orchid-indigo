@@ -135,6 +135,22 @@ public sealed class ArchiveEntry
     public string? DownloadMode { get; set; }
     /// The manifest's media_file, folder-relative; null when absent.
     public string? MediaFile { get; set; }
+
+    /* The manifest's archive_creation_time, verbatim, or null. Not parsed:
+     * nothing here does date arithmetic on it, and its one job is to be an
+     * opaque token that CHANGES whenever postprocess.ps1 has been over this
+     * folder again. That is what lets a derived cache -- a verification
+     * result, a parsed comment tree -- notice that `ytdl --refresh` rewrote
+     * the folder underneath it. The contract now names this explicitly. */
+    public string? CreationStamp { get; set; }
+
+    /* How many entries the manifest's refresh_history carries; 0 for the
+     * overwhelming majority of folders, which have never been refreshed. A
+     * count rather than the records themselves, because nothing in this app
+     * needs them and holding them would mean holding them for every video in
+     * the index. */
+    public int RefreshCount { get; set; }
+
     public long Timestamp { get; set; } = -1;
     public long ViewCount { get; set; } = -1;
     public double Duration { get; set; } = -1;
@@ -277,7 +293,48 @@ public sealed class ArchiveEntry
 
     public string? MediaPath => PathForIndex(MediaIndex);
     public string? ThumbnailPath => PathForIndex(ThumbnailIndex);
+
+    /// <summary>
+    /// Every byte in the video folder, including the sidecars and the
+    /// pre-merge streams.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the WHOLE folder rather than just the media file: this is
+    /// what the folder costs on the disk it is sitting on, which is the
+    /// question someone sorting by size is asking. A --keep-video folder is
+    /// roughly twice its media file and that is the true answer, not a
+    /// distortion. Summed from <see cref="Files"/>, which the scan already
+    /// walked, so there is no second stat pass and this is free to call per
+    /// entry on every re-sort.
+    ///
+    /// This property predates the Library sort by some time -- it is the one
+    /// place the three apps were NOT at parity in the other direction, and the
+    /// GTK and SwiftUI equivalents were added to match it rather than the
+    /// other way round.
+    /// </remarks>
     public long TotalBytes => Files.Sum(f => f.Size);
+
+    /// <summary>Whether this folder holds audio and no video.</summary>
+    /// <remarks>
+    /// Asked of the MANIFEST first (<see cref="DownloadMode"/>), then of the
+    /// media file's base name, and in that order for the reason the contract
+    /// gives: "Final Audio" is the layout-2 rename and download_mode is the
+    /// field consumers are told to prefer. A folder with no media at all is
+    /// not audio-only -- it is media-less, which is a different facet and a
+    /// different answer.
+    /// </remarks>
+    public bool IsAudioOnly
+    {
+        get
+        {
+            if (DownloadMode is not null)
+                return string.Equals(DownloadMode, "audio-only", StringComparison.Ordinal);
+
+            var idx = MediaIndex;
+            if (idx < 0) return false;
+            return BasenameStartsWith(Files[idx].Rel, "Final Audio.");
+        }
+    }
 }
 
 /// The "&lt;uploader&gt; - &lt;YYYYMMDD&gt; - &lt;id&gt; - &lt;title&gt;" fallback.
@@ -490,6 +547,16 @@ public sealed class ArchiveIndex
 
         entry.MediaFile = o.Str("media_file");
         entry.DownloadMode = o.Str("download_mode");
+        entry.CreationStamp = o.Str("archive_creation_time");
+
+        /* refresh_history is optional and absent on nearly every folder -- it
+         * appears only once `ytdl --refresh` has re-fetched something into
+         * this one. Deliberately NOT a layout bump on the pipeline's side, so
+         * a reader that ignored it would still be correct; this one reads it
+         * because "these comments are newer than this video" is worth a badge,
+         * and because a folder that has been refreshed is a folder whose
+         * cached derivatives are stale. */
+        entry.RefreshCount = o.Objects("refresh_history").Count;
 
         entry.VideoId ??= o.Str("video_id");
         if (entry.Title.Length == 0 && o.Str("title") is { } t) entry.Title = t;

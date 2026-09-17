@@ -116,6 +116,18 @@ final class AppModel: ObservableObject {
     @Published var status = "Starting…"
     @Published var section: AppSection = .library
     @Published var searchText = ""
+
+    /* Sort and facets. Published so a change in the popover redraws the grid;
+     * the RULES live in Core/LibraryFilter.swift rather than here, so they can
+     * be tested without a window and read against the C and C# copies. */
+    @Published var filter = LibraryFilter()
+
+    /* Verification results, borrowed by the "failed verification" facet. Not
+     * @Published: it is a reference type the facet reads through a closure,
+     * and a verification recorded on the detail page redraws the grid through
+     * the objectWillChange below rather than by being observed. */
+    let verifyCache = VerifyCache()
+
     /// The library's navigation stack: a path of opaque keys, never entries.
     @Published var libraryPath: [String] = []
     /// Set when a scan fails outright, which is the one thing that must
@@ -152,6 +164,23 @@ final class AppModel: ObservableObject {
         profiles = ProfileStore.load()
         downloads = DownloadsModel(settings: loaded, store: profiles)
         archiveRoot = AppModel.resolveRoot(settings: loaded)
+
+        /* The saved ordering, before the first scan, so the first grid ever
+         * drawn is already in the order this user chose. The FACETS
+         * deliberately do not persist -- see Settings: an app that reopens
+         * showing a fifth of the archive with no visible reason looks like it
+         * lost your videos. */
+        filter.sort = SortKey.from(id: loaded.librarySort)
+        filter.descending = loaded.librarySortDescending
+    }
+
+    /// Remember an ordering the user chose. Called from the sort control, not
+    /// from the facet controls, which are not persisted.
+    func persistSort() {
+        settings.librarySort = filter.sort.rawValue
+        settings.librarySortDescending = filter.descending
+        settings.save()
+        updateCounts()
     }
 
     private static func resolveRoot(settings: Settings) -> String? {
@@ -256,18 +285,38 @@ final class AppModel: ObservableObject {
 
     // MARK: - Filtering
 
-    /// Case-insensitive substring over title, uploader, video id and channel.
+    /// The search field and the facets are one filter, so the needle is pushed
+    /// into it here rather than being a second, parallel narrowing that the
+    /// count and the empty state would each have to remember to apply.
     var filteredEntries: [ArchiveEntry] {
-        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return index.entries }
+        var f = filter
+        f.needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return f.apply(to: index.entries, verify: verifyCache.state(for:))
+    }
 
-        return index.entries.filter { e in
-            for field in [e.title, e.uploader, e.videoID ?? "", e.channel]
-            where field.lowercased().contains(needle) {
-                return true
-            }
-            return false
-        }
+    /// Whether anything at all is narrowing the library, INCLUDING the search
+    /// field. Drives the empty state, which has to tell "there is no archive
+    /// here" apart from "your filters exclude everything" -- they look
+    /// identical as a blank grid and only one of them is the user's own doing.
+    var isNarrowing: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || filter.facetCount > 0
+    }
+
+    /// Clear the facets AND the search field. The needle is part of the filter
+    /// as far as the user is concerned, so leaving the search box populated
+    /// after "Clear filters" would leave a term visibly applied that is not.
+    func clearFilters() {
+        filter.reset()
+        searchText = ""
+        updateCounts()
+    }
+
+    /// Record a verification result and redraw anything reading the facet.
+    /// Called from the detail page and, later, from a bulk verify.
+    func recordVerification(_ state: VerifyState, for entry: ArchiveEntry) {
+        verifyCache.set(state, for: entry)
+        objectWillChange.send()
     }
 
     func entry(forKey key: String) -> ArchiveEntry? {

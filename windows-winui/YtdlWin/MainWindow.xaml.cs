@@ -195,4 +195,22 @@ public sealed partial class MainWindow : Window
         (ContentFrame.Content as LibraryPage)?.RefreshGrid();
         _model.UpdateCounts();
     }
+
+    /// <summary>
+    /// Push the model's search text back into the box.
+    /// </summary>
+    /// <remarks>
+    /// The search box lives here and the Clear filters control lives on the
+    /// Library page, and the needle belongs to the filter both of them share.
+    /// Without this, clearing filters would empty the needle while the box
+    /// went on displaying the term -- a search visibly applied that is not.
+    ///
+    /// The guard on Reason above is what makes this safe: setting Text here
+    /// raises TextChanged with Reason = ProgrammaticChange, which that handler
+    /// ignores, so this cannot loop.
+    /// </remarks>
+    public void SyncSearchBox()
+    {
+        if (Search.Text != _model.SearchText) Search.Text = _model.SearchText;
+    }
 }

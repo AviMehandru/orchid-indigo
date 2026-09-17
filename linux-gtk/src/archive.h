@@ -63,6 +63,22 @@ typedef struct
   char  *original_url;
   char  *download_mode; /* which --mode wrote this folder; may be NULL */
   char  *media_file;    /* manifest's media_file, folder-relative; may be NULL */
+
+  /* The manifest's archive_creation_time, verbatim, or NULL. Not parsed:
+   * nothing here does date arithmetic on it, and its one job is to be an
+   * opaque token that CHANGES whenever postprocess.ps1 has been over this
+   * folder again. That is what lets a derived cache -- a verification
+   * result, a parsed comment tree -- notice that `ytdl --refresh` rewrote
+   * the folder underneath it. The contract now names this explicitly. */
+  char  *creation_stamp;
+
+  /* How many entries the manifest's refresh_history carries; 0 for the
+   * overwhelming majority of folders, which have never been refreshed. A
+   * count rather than the array because nothing in this app needs the
+   * records themselves, and holding them would mean holding them for every
+   * video in the index. */
+  guint  refresh_count;
+
   gint64 timestamp;
   gint64 view_count;
   double duration;
@@ -110,6 +126,25 @@ gssize ytdl_entry_media_index (const YtdlEntry *entry);
 
 /* The index into entry->files of the best thumbnail, or -1. */
 gssize ytdl_entry_thumbnail_index (const YtdlEntry *entry);
+
+/* Every byte in the video folder, including the sidecars and the pre-merge
+ * streams. Deliberately the WHOLE folder rather than just the media file:
+ * this is what the folder costs on the disk it is sitting on, which is the
+ * question someone sorting by size is asking. A --keep-video folder is
+ * roughly twice its media file and that is the true answer, not a distortion.
+ *
+ * Summed from entry->files, which the scan already walked -- no second stat
+ * pass, so this is free to call per entry on every re-sort. */
+guint64 ytdl_entry_total_size (const YtdlEntry *entry);
+
+/* Whether this folder holds audio and no video.
+ *
+ * Asked of the MANIFEST first (download_mode), then of the media file's base
+ * name, and in that order for the reason the contract gives: "Final Audio" is
+ * the layout-2 rename and download_mode is the field consumers are told to
+ * prefer. A folder with no media at all is not audio-only -- it is media-less,
+ * which is a different facet and a different answer. */
+gboolean ytdl_entry_is_audio_only (const YtdlEntry *entry);
 
 /* Resolve a file index to an absolute path, re-checking that the result is
  * inside entry->dir. Returns NULL for an out-of-range index or a path that
