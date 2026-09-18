@@ -1099,8 +1099,40 @@ make_queue_row (YtdlDownloadsView *self, const YtdlRunRecord *r)
   return row;
 }
 
+/* Defined with the rest of the actions, several hundred lines below, and
+ * needed here: the history rows are built up with the queue rows, and the
+ * actions that operate on them are grouped together further down. */
+static void show_error (YtdlDownloadsView *self, const char *message);
+
+/* Queue the same run again.
+ *
+ * YtdlRunRecord already carries the whole YtdlRunOptions it was built from, so
+ * this is a copy and an enqueue -- no re-derivation from the command string,
+ * which would mean parsing back a line this app formatted for a human and
+ * getting --ytdlp-arg values wrong the first time one contained a space.
+ *
+ * The URL is copied with everything else, which is the point: a run that
+ * failed at video 40 of 80 is re-run as the same session, and --sync (if it
+ * was set) will walk it forward from wherever the archive now is. */
+static void
+on_run_again (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  const YtdlRunOptions *opts = g_object_get_data (G_OBJECT (btn), "run-opts");
+  if (opts == NULL)
+    return;
+
+  GError *error = NULL;
+  g_autofree char *id = ytdl_runner_enqueue (self->runner, opts, &error);
+  if (id == NULL)
+    {
+      show_error (self, error->message);
+      g_clear_error (&error);
+    }
+}
+
 static GtkWidget *
-make_history_row (const YtdlRunRecord *r)
+make_history_row (YtdlDownloadsView *self, const YtdlRunRecord *r)
 {
   GtkWidget *row = adw_action_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row),
@@ -1140,6 +1172,29 @@ make_history_row (const YtdlRunRecord *r)
     gtk_widget_add_css_class (state, "warn");
   adw_action_row_add_prefix (ADW_ACTION_ROW (row), state);
 
+  /* Offered on every finished run, not only on a failed one. "It failed,
+   * run it again" is the obvious case, but "that worked, do the next
+   * channel the same way" is the commoner one, and a record that carries
+   * its whole option set can serve both. Withheld only when there is no
+   * option set to re-run, which is a record restored from a store written
+   * before those were saved. */
+  if (r->opts != NULL)
+    {
+      GtkWidget *again =
+          gtk_button_new_from_icon_name ("view-refresh-symbolic");
+      gtk_widget_set_tooltip_text (again, "Queue this run again");
+      gtk_widget_set_valign (again, GTK_ALIGN_CENTER);
+      gtk_widget_add_css_class (again, "flat");
+      /* A COPY, owned by the button. The records this row was built from are
+       * a snapshot that is freed as soon as the refresh returns, and a
+       * pointer into one would be dangling by the time anybody clicked. */
+      g_object_set_data_full (G_OBJECT (again), "run-opts",
+                              ytdl_run_options_copy (r->opts),
+                              (GDestroyNotify) ytdl_run_options_free);
+      g_signal_connect (again, "clicked", G_CALLBACK (on_run_again), self);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), again);
+    }
+
   return row;
 }
 
@@ -1160,7 +1215,8 @@ on_state_changed (YtdlRunner *runner, gpointer user_data)
   clear_list (self->history_box);
   for (guint i = 0; i < history->len; i++)
     gtk_list_box_append (GTK_LIST_BOX (self->history_box),
-                         make_history_row (g_ptr_array_index (history, i)));
+                         make_history_row (self,
+                                           g_ptr_array_index (history, i)));
 
   g_autofree char *qt =
       g_strdup_printf ("Queue (%u)", queue->len);

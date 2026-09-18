@@ -52,6 +52,18 @@ void ytdl_detail_view_set_user_data (YtdlDetailView *self, YtdlUserData *ud);
  * on, finishing a video means it should leave the grid, and a grid that only
  * caught up on the next rescan would look broken. */
 
+/* Signal: "refetch-requested" (const char *url, const char *mode)
+ *
+ * A re-fetch button was pressed. @mode is one of the pipeline's no-media modes
+ * -- comments-only, subs-only, metadata-only -- and the run is expected to
+ * carry `--refresh` so the component is MERGED into the folder that already
+ * exists rather than relabelling it.
+ *
+ * A signal rather than a call into the runner, so this file keeps knowing
+ * nothing about pipeline.h. The page's job is to say what the user asked for;
+ * deciding that the answer is a queued run, and switching to the pane where it
+ * will appear, belongs to whatever is holding both. */
+
 G_END_DECLS
 
 #endif /* YTDL_DETAIL_VIEW_H */

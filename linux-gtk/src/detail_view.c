@@ -104,6 +104,14 @@ struct _YtdlDetailView
   char *media_path;
   char *folder;
 
+  /* Copied on show(), for the re-fetch row. The URL is what a refresh run
+   * needs; the mode is only used to word the buttons, never to decide what
+   * the pipeline does with them. */
+  char      *original_url;
+  char      *download_mode;
+  GtkWidget *refetch_row;
+  GtkWidget *refetch_note;
+
   /* Bumped on every show(); a worker whose generation no longer matches has
    * been superseded by a later click and throws its result away. */
   guint generation;
@@ -111,13 +119,17 @@ struct _YtdlDetailView
 
 G_DEFINE_FINAL_TYPE (YtdlDetailView, ytdl_detail_view, GTK_TYPE_BOX)
 
+/* Declared up here, with the type, rather than beside class_init: both the
+ * re-fetch handler and the watched toggle emit from several hundred lines
+ * above where the class is initialised. */
 enum
 {
   SIG_WATCH_STATE_CHANGED,
-  N_SIGNALS
+  SIG_REFETCH_REQUESTED,
+  N_DETAIL_SIGNALS
 };
 
-static guint detail_signals[N_SIGNALS];
+static guint detail_signals[N_DETAIL_SIGNALS];
 
 /* The watch-state helpers live down beside the rest of the actions, but
  * render() -- which is above them -- has to arm the resume seek at the moment
@@ -817,6 +829,28 @@ verify_thread (gpointer user_data)
   return NULL;
 }
 
+/* Ask for one component to be fetched again into this folder.
+ *
+ * The button carries its own mode as object data rather than there being three
+ * near-identical handlers, and the view emits rather than enqueuing: this file
+ * does not include pipeline.h and should not start. See the signal's note in
+ * detail_view.h. */
+static void
+on_refetch (GtkButton *b, gpointer user_data)
+{
+  YtdlDetailView *self = user_data;
+  const char *mode = g_object_get_data (G_OBJECT (b), "mode");
+
+  /* Guarded rather than trusted: the row is hidden when there is no URL, and
+   * a hidden row cannot be clicked, but "cannot" is doing a lot of work in a
+   * callback and the cost of checking is one comparison. */
+  if (mode == NULL || self->original_url == NULL || *self->original_url == '\0')
+    return;
+
+  g_signal_emit (self, detail_signals[SIG_REFETCH_REQUESTED], 0,
+                 self->original_url, mode);
+}
+
 static void
 on_verify (GtkButton *b, gpointer user_data)
 {
@@ -1083,6 +1117,38 @@ ytdl_detail_view_show (YtdlDetailView *self, const YtdlEntry *entry)
   g_free (self->folder);
   self->folder = g_strdup (d->dir);
 
+  /* The re-fetch row needs a URL to re-fetch FROM, and the layout contract
+   * names a folder with no original_url as an ordinary state -- an archive
+   * assembled by hand, or one whose info.json was never written. Hidden
+   * rather than disabled: three greyed-out buttons invite a hunt for what
+   * would enable them, and nothing the user can do here would. */
+  g_free (self->original_url);
+  self->original_url = g_strdup (d->original_url);
+  g_free (self->download_mode);
+  self->download_mode = g_strdup (d->download_mode);
+
+  gboolean can_refetch =
+      self->original_url != NULL && *self->original_url != '\0';
+  gtk_widget_set_visible (self->refetch_row, can_refetch);
+  gtk_widget_set_visible (self->refetch_note, TRUE);
+
+  if (!can_refetch)
+    {
+      gtk_label_set_text (
+          GTK_LABEL (self->refetch_note),
+          "This folder records no source URL, so nothing can be re-fetched "
+          "into it.");
+    }
+  else
+    {
+      /* Says what a refresh will and will not touch, because "re-fetch" on a
+       * page showing a video reads as though it might replace the video. */
+      gtk_label_set_text (
+          GTK_LABEL (self->refetch_note),
+          "Re-fetching merges into this folder: the media file, and which "
+          "mode originally wrote it, are preserved.");
+    }
+
   gtk_label_set_text (GTK_LABEL (self->subtitle),
                       entry->title != NULL ? entry->title : "(untitled)");
   gtk_label_set_text (GTK_LABEL (self->summary), "Reading…");
@@ -1131,6 +1197,8 @@ ytdl_detail_view_dispose (GObject *object)
   self->userdata = NULL;
   g_clear_pointer (&self->media_path, g_free);
   g_clear_pointer (&self->folder, g_free);
+  g_clear_pointer (&self->original_url, g_free);
+  g_clear_pointer (&self->download_mode, g_free);
   G_OBJECT_CLASS (ytdl_detail_view_parent_class)->dispose (object);
 }
 
@@ -1143,6 +1211,11 @@ ytdl_detail_view_class_init (YtdlDetailViewClass *klass)
       g_signal_new ("watch-state-changed", G_TYPE_FROM_CLASS (klass),
                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
                     G_TYPE_STRING);
+
+  detail_signals[SIG_REFETCH_REQUESTED] =
+      g_signal_new ("refetch-requested", G_TYPE_FROM_CLASS (klass),
+                    G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 2,
+                    G_TYPE_STRING, G_TYPE_STRING);
 }
 
 static void
@@ -1297,9 +1370,76 @@ ytdl_detail_view_init (YtdlDetailView *self)
   gtk_widget_add_css_class (self->verify_result, "caption");
   gtk_flow_box_append (GTK_FLOW_BOX (actions), self->verify_result);
 
+  /* --- re-fetch ---
+   *
+   * The single most obviously-missing control in this app until now: the
+   * pipeline has had --mode comments-only and subs-only for a long time, and
+   * a video whose comments pass failed had no button that said "get those
+   * now" -- you retyped the URL on the Downloads pane.
+   *
+   * It is a SEPARATE row from the actions above, and deliberately so. Those
+   * four read the folder. These three start a run that writes into it, and
+   * putting them in the same row as "Open folder" would make the difference
+   * between looking and fetching a matter of which button you happened to
+   * hit.
+   *
+   * Every one of them carries --refresh, which is what makes the run MERGE
+   * into this folder instead of relabelling it comments-only with no media.
+   * Without the pipeline change that flag belongs to, these buttons could not
+   * exist: --download-archive would make yt-dlp skip the video, --no-overwrites
+   * would stop the hook firing, and the manifest would end up lying about
+   * what is on disk. */
+  self->refetch_row = gtk_flow_box_new ();
+  gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (self->refetch_row),
+                                   GTK_SELECTION_NONE);
+  gtk_flow_box_set_homogeneous (GTK_FLOW_BOX (self->refetch_row), FALSE);
+  gtk_flow_box_set_min_children_per_line (GTK_FLOW_BOX (self->refetch_row), 1);
+  gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (self->refetch_row), 4);
+  gtk_flow_box_set_column_spacing (GTK_FLOW_BOX (self->refetch_row), 8);
+  gtk_flow_box_set_row_spacing (GTK_FLOW_BOX (self->refetch_row), 8);
+  gtk_widget_set_margin_start (self->refetch_row, 12);
+  gtk_widget_set_margin_end (self->refetch_row, 12);
+
+  static const struct
+  {
+    const char *label;
+    const char *mode;
+    const char *tip;
+  } refetches[] = {
+    { "Re-fetch comments", "comments-only",
+      "Runs the comments pass again and merges it into this folder. The "
+      "media file is left alone, and the comment-complete info.json is "
+      "re-embedded into it." },
+    { "Re-fetch subtitles", "subs-only",
+      "Downloads the subtitle tracks again. Useful when captions were "
+      "published after this video was archived." },
+    { "Re-fetch metadata", "metadata-only",
+      "Re-reads the description, thumbnail and info.json. The video itself "
+      "is not downloaded again." },
+  };
+
+  for (gsize i = 0; i < G_N_ELEMENTS (refetches); i++)
+    {
+      GtkWidget *b = gtk_button_new_with_label (refetches[i].label);
+      gtk_widget_set_tooltip_text (b, refetches[i].tip);
+      g_object_set_data (G_OBJECT (b), "mode", (gpointer) refetches[i].mode);
+      g_signal_connect (b, "clicked", G_CALLBACK (on_refetch), self);
+      gtk_flow_box_append (GTK_FLOW_BOX (self->refetch_row), b);
+    }
+
+  self->refetch_note = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (self->refetch_note), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (self->refetch_note), TRUE);
+  gtk_widget_add_css_class (self->refetch_note, "dim-label");
+  gtk_widget_add_css_class (self->refetch_note, "caption");
+  gtk_widget_set_margin_start (self->refetch_note, 12);
+  gtk_widget_set_margin_end (self->refetch_note, 12);
+
   GtkWidget *lower = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_widget_set_margin_top (lower, 8);
   gtk_box_append (GTK_BOX (lower), actions);
+  gtk_box_append (GTK_BOX (lower), self->refetch_row);
+  gtk_box_append (GTK_BOX (lower), self->refetch_note);
   gtk_paned_set_end_child (GTK_PANED (split), lower);
 
   /* --- sections --- */

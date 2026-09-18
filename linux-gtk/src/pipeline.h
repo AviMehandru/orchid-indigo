@@ -74,6 +74,18 @@ typedef struct
   gboolean no_thumbnail;
   gboolean no_metadata;
 
+  /* `ytdl --refresh`: this video is already archived; re-fetch the component
+   * named by @mode and MERGE it into the folder that is already there.
+   *
+   * Only ever set alongside a no-media mode. Validation stays where all the
+   * other validation is -- ytdl.ps1 refuses --refresh without one of
+   * metadata-only, comments-only or subs-only, and refuses it with --sync --
+   * so a second copy of those rules here would be a second thing to keep in
+   * step across two repositories for nothing the user can see. What this app
+   * must not do is OFFER the combination, which is why the only control that
+   * sets this is the re-fetch row on a video's own page. */
+  gboolean refresh;
+
   GPtrArray *ytdlp_args; /* char*, each emitted as its own --ytdlp-arg */
 } YtdlRunOptions;
 

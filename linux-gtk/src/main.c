@@ -455,6 +455,56 @@ on_rescan_clicked (GtkButton *button, gpointer user_data)
   start_scan (user_data);
 }
 
+/* A re-fetch button on a video's page.
+ *
+ * This is where the detail page's "what the user asked for" becomes a queued
+ * run. The options are built here rather than there because building them
+ * needs pipeline.h, and the detail page deliberately does not include it.
+ *
+ * Only the URL, the mode and --refresh are set. Nothing is carried over from
+ * whatever is typed on the Downloads form: a refresh is a re-fetch of one
+ * component into a folder that already exists, and inheriting a destination
+ * or a quality cap from an unrelated form would be a way to write it somewhere
+ * else entirely. The data root is the exception and is deliberately NOT set
+ * either -- the pipeline's own default resolves to the same archive this
+ * video was read from, and a stored override that pointed elsewhere is
+ * exactly the "library and downloads pointing at different folders" bug the
+ * Health pane exists to catch. */
+static void
+on_refetch_requested (GtkWidget *view, const char *url, const char *mode,
+                      gpointer user_data)
+{
+  App *app = user_data;
+  if (url == NULL || *url == '\0' || mode == NULL)
+    return;
+
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup (url);
+  o->mode = g_strdup (mode);
+  o->refresh = TRUE;
+
+  GError *error = NULL;
+  g_autofree char *id = ytdl_runner_enqueue (app->runner, o, &error);
+  if (id == NULL)
+    {
+      toast (app, error != NULL ? error->message : "Could not queue the run.");
+      g_clear_error (&error);
+      return;
+    }
+
+  /* Back to the grid and over to Downloads, because a run that has been
+   * queued and cannot be seen is indistinguishable from a button that did
+   * nothing. The queue is strictly sequential, so this may sit behind
+   * something already running -- which is exactly why it has to be visible. */
+  adw_navigation_view_pop_to_tag (ADW_NAVIGATION_VIEW (app->nav), "main");
+  adw_view_stack_set_visible_child_name (ADW_VIEW_STACK (app->stack),
+                                         "downloads");
+
+  g_autofree char *msg =
+      g_strdup_printf ("Queued a %s refresh.", mode);
+  toast (app, msg);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Sort and facets                                                        */
 /* ---------------------------------------------------------------------- */
@@ -1597,6 +1647,8 @@ static GtkWidget *
 build_detail_page (App *app)
 {
   app->detail = ytdl_detail_view_new ();
+  g_signal_connect (app->detail, "refetch-requested",
+                    G_CALLBACK (on_refetch_requested), app);
 
   GtkWidget *header = adw_header_bar_new ();
 

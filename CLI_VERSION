@@ -19,6 +19,28 @@ CLI_REPO=AviMehandru/orchid-ochre
 # it deliberately after testing against that tag.
 CLI_REF=main
 
+# Pipeline OPTIONS these apps emit that an older `ytdl` will not recognise.
+#
+# Separate from REQUIRES_ARCHIVE_LAYOUT below, and the difference is the
+# point. The layout version is about what postprocess.ps1 WROTE and what
+# these apps have to be able to read; this is about what these apps SEND
+# and what ytdl.ps1 has to be able to accept. The two move independently:
+# `--refresh` added a manifest field (refresh_history) without changing what
+# download_mode or media_file mean, so it deliberately did NOT bump the
+# layout -- an app that cannot read refresh_history still reads every folder
+# correctly.
+#
+# NOTHING ENFORCES THIS, and saying so is better than implying otherwise.
+# `ytdl` rejects an unknown option with exit code 2 and a message naming it,
+# which the Downloads pane shows verbatim, so an app running against an older
+# pipeline fails visibly on the first re-fetch rather than silently doing
+# nothing. That is an acceptable failure; a silent one would not be. This
+# line is what tells a person reading the pin WHY that happened.
+#
+# Space-separated, and append-only in practice: an option listed here is one
+# some released app already sends.
+REQUIRES_YTDL_OPTIONS=--refresh
+
 # The archive layout version (docs/archive-layout.md in the pipeline repo)
 # every app in this repository knows how to read.
 #

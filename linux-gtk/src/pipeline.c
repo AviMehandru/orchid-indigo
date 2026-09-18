@@ -81,6 +81,7 @@ ytdl_run_options_copy (const YtdlRunOptions *s)
   o->no_subs = s->no_subs;
   o->no_thumbnail = s->no_thumbnail;
   o->no_metadata = s->no_metadata;
+  o->refresh = s->refresh;
   if (s->ytdlp_args != NULL)
     for (guint i = 0; i < s->ytdlp_args->len; i++)
       g_ptr_array_add (o->ytdlp_args,
@@ -210,6 +211,8 @@ ytdl_run_options_to_args (const YtdlRunOptions *o)
     g_ptr_array_add (v, g_strdup ("--no-thumbnail"));
   if (o->no_metadata)
     g_ptr_array_add (v, g_strdup ("--no-metadata"));
+  if (o->refresh)
+    g_ptr_array_add (v, g_strdup ("--refresh"));
 
   /* Repeated rather than joined: ytdl.ps1 takes one value per occurrence, and
    * a real --match-filter expression contains commas and spaces, so no
@@ -638,6 +641,7 @@ ytdl_run_options_build_json (JsonBuilder *b, const YtdlRunOptions *o)
   B ("no_subs", o->no_subs);
   B ("no_thumbnail", o->no_thumbnail);
   B ("no_metadata", o->no_metadata);
+  B ("refresh", o->refresh);
 #undef S
 #undef B
 
@@ -703,6 +707,7 @@ ytdl_run_options_from_json (JsonObject *obj)
   GB ("no_subs", o->no_subs);
   GB ("no_thumbnail", o->no_thumbnail);
   GB ("no_metadata", o->no_metadata);
+  GB ("refresh", o->refresh);
 #undef GS
 #undef GB
 
