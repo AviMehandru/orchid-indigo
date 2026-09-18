@@ -11,6 +11,7 @@
  * index is current.
  */
 
+import AppKit
 import SwiftUI
 
 struct LibraryView: View {
@@ -23,6 +24,11 @@ struct LibraryView: View {
             VStack(spacing: 0) {
                 IndexBanner()
                 content
+                /* Below the grid rather than above it: the bar acts on what is
+                 * selected, and a control strip that pushed the grid down
+                 * every time the mode was entered would move the very cards
+                 * the user was about to click. */
+                if model.selecting { BulkBar() }
             }
                 .navigationTitle("Library")
                 .navigationDestination(for: String.self) { key in
@@ -31,6 +37,17 @@ struct LibraryView: View {
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         FilterMenu()
+                    }
+                    /* The selection-mode switch, in the toolbar rather than in
+                     * the bulk bar: a control that dismissed the thing it
+                     * lives inside would have nowhere to be when the bar was
+                     * hidden. */
+                    ToolbarItem(placement: .primaryAction) {
+                        Toggle(isOn: $model.selecting) {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                        .toggleStyle(.button)
+                        .help("Select several videos to act on at once")
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -107,18 +124,122 @@ struct LibraryView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(entries) { entry in
-                        VideoCard(entry: entry)
-                            .onTapGesture(count: 2) { model.libraryPath.append(entry.key) }
-                            /* Double-click opens, which is the platform's
-                             * convention for "activate this". The button keeps
-                             * a single-click route for anyone who expects one,
-                             * and makes the card reachable from the keyboard. */
-                            .accessibilityAddTraits(.isButton)
+                        card(for: entry)
                     }
                 }
                 .padding(14)
             }
         }
+    }
+
+    /* Two gestures, decided by the mode rather than by a modifier key.
+     *
+     * In selection mode a SINGLE click toggles: requiring a double-click to
+     * tick a box would be the one gesture nobody tries. Out of it, a double
+     * click opens, which is the platform's convention for "activate this". */
+    @ViewBuilder
+    private func card(for entry: ArchiveEntry) -> some View {
+        if model.selecting {
+            VideoCard(entry: entry)
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: model.selectedKeys.contains(entry.key)
+                          ? "checkmark.circle.fill" : "circle")
+                        .font(.title2)
+                        .foregroundStyle(model.selectedKeys.contains(entry.key)
+                                         ? Color.accentColor : .secondary)
+                        .padding(8)
+                }
+                .onTapGesture { model.toggleSelection(entry.key) }
+                .accessibilityAddTraits(.isButton)
+        } else {
+            VideoCard(entry: entry)
+                .onTapGesture(count: 2) { model.libraryPath.append(entry.key) }
+                .accessibilityAddTraits(.isButton)
+        }
+    }
+}
+
+/* The bulk bar.
+ *
+ * Revealed with selection mode, and every control stays VISIBLE and goes
+ * disabled on an empty selection: a bar whose contents appear and disappear as
+ * you tick boxes is a bar that moves under the pointer. */
+struct BulkBar: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(model.selectedKeys.isEmpty
+                 ? "Nothing selected"
+                 : "\(model.selectedKeys.count) selected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button("Select all") { model.selectAllShown() }
+                .help("Everything the current filter is showing — not the whole archive.")
+
+            Button("Mark watched") { model.bulkSetWatched(true) }
+                .disabled(disabled)
+            Button("Mark unwatched") { model.bulkSetWatched(false) }
+                .disabled(disabled)
+
+            Menu("Add to playlist") {
+                if model.userData.playlists.isEmpty {
+                    Text("No playlists yet")
+                } else {
+                    ForEach(model.userData.playlists) { pl in
+                        Button(pl.name) { model.bulkAddToPlaylist(pl.id) }
+                    }
+                }
+            }
+            .disabled(disabled)
+            .fixedSize()
+
+            Spacer()
+
+            if model.verifyingBulk {
+                Text(model.verifyProgress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Copy URLs") { copyURLs() }
+                .disabled(model.selectedKeys.isEmpty)
+
+            Button("Verify") { model.bulkVerify() }
+                .disabled(model.selectedKeys.isEmpty || model.verifyingBulk)
+                .help("Re-hashes every file in each selected folder. Seconds per video.")
+
+            /* Only the three no-media modes are refreshable, which is
+             * ytdl.ps1's own rule. Offering "full" here would queue a batch
+             * the pipeline refuses one run at a time. */
+            Menu("Re-fetch") {
+                Button("Re-fetch comments") { model.bulkRefetch(mode: "comments-only") }
+                Button("Re-fetch subtitles") { model.bulkRefetch(mode: "subs-only") }
+                Button("Re-fetch metadata") { model.bulkRefetch(mode: "metadata-only") }
+            }
+            .disabled(model.selectedKeys.isEmpty)
+            .fixedSize()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var disabled: Bool {
+        model.selectedKeys.isEmpty || model.userData.isReadOnly
+    }
+
+    private func copyURLs() {
+        guard let result = model.selectedURLs() else {
+            model.status = "None of the selected videos recorded a source URL."
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(result.text, forType: .string)
+        model.status = result.have == result.total
+            ? "Copied \(result.have) URL\(result.have == 1 ? "" : "s")."
+            : "Copied \(result.have) of \(result.total) URLs — the rest recorded none."
     }
 }
 

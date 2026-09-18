@@ -524,6 +524,198 @@ public sealed class AppModel
         RefreshPlaylistFilter();
     }
 
+    // ------------------------------------------------------------------ //
+    // Multi-select and bulk actions                                      //
+    // ------------------------------------------------------------------ //
+
+    /* A MODE rather than "ctrl-click always multi-selects": the primary
+     * gesture on a card is "open this", and a grid where a stray click adds to
+     * a hidden selection does the wrong thing quietly. */
+    public bool Selecting
+    {
+        get => _selecting;
+        set
+        {
+            _selecting = value;
+            /* Leaving the mode clears the selection. A selection nothing on
+             * screen is showing is not a selection. */
+            if (!value) SelectedKeys.Clear();
+        }
+    }
+
+    private bool _selecting;
+
+    /// The keys the user has ticked. Owned here rather than read off the
+    /// GridView, so a bulk action does not depend on a control still existing.
+    public HashSet<string> SelectedKeys { get; } = new(StringComparer.Ordinal);
+
+    /// Progress for the one bulk action that takes real time.
+    public bool VerifyingBulk { get; private set; }
+    public string VerifyProgress { get; private set; } = "";
+
+    /// One save for the whole batch. Saving per video would rewrite the store a
+    /// few hundred times for one button press.
+    public string BulkSetWatched(bool watched)
+    {
+        if (SelectedKeys.Count == 0 || UserData.IsReadOnly) return "";
+        foreach (var key in SelectedKeys) UserData.SetWatched(key, watched);
+        UserData.Save();
+
+        var n = SelectedKeys.Count;
+        UpdateCounts();
+        return $"Marked {n} video{(n == 1 ? "" : "s")} " +
+               (watched ? "watched." : "unwatched.");
+    }
+
+    /* ADD-ONLY, and deliberately without a tick state. A mixed selection where
+     * some videos are in a playlist and some are not has no honest checkbox
+     * state, and a control that flipped each one independently would remove
+     * half of them. */
+    public string BulkAddToPlaylist(string id)
+    {
+        if (SelectedKeys.Count == 0 || UserData.IsReadOnly) return "";
+
+        var added = 0;
+        foreach (var key in SelectedKeys)
+        {
+            if (UserData.AddToPlaylist(id, key)) added++;
+        }
+        UserData.Save();
+        RefreshPlaylistFilter();
+
+        var name = UserData.GetPlaylist(id)?.Name ?? "the playlist";
+        return $"Added {added} video{(added == 1 ? "" : "s")} to {name}.";
+    }
+
+    /// The selected entries, resolved against the CURRENT index.
+    public List<ArchiveEntry> SelectedEntries() =>
+        FilteredEntries().Where(e => SelectedKeys.Contains(e.Key)).ToList();
+
+    /* ONE RUN PER VIDEO, not one run with many URLs. `ytdl --refresh` refreshes
+     * the video it is given; a session with several URLs would be a --sync-like
+     * shape the refusal list rejects, and one that failed halfway would leave
+     * no way to tell which videos were reached. Separate queue entries also
+     * mean a single failure is one red row rather than the whole batch. */
+    public string BulkRefetch(string mode)
+    {
+        var queued = 0;
+        foreach (var e in SelectedEntries())
+        {
+            if (string.IsNullOrEmpty(e.OriginalUrl)) continue;
+            Runner.Enqueue(new RunOptions
+            {
+                Url = e.OriginalUrl!,
+                Mode = mode,
+                Refresh = true,
+            });
+            queued++;
+        }
+
+        if (queued == 0) return "None of the selected videos recorded a source URL.";
+        return $"Queued {queued} {mode} refresh{(queued == 1 ? "" : "es")}.";
+    }
+
+    /// Verify every selected folder. Seconds per video, so it runs off the UI
+    /// thread with a progress readout.
+    public async void BulkVerify(Action<string> done)
+    {
+        if (VerifyingBulk || SelectedKeys.Count == 0) return;
+
+        /* The keys and directories are copied out HERE, while the index is
+         * known to be current. A worker holding entries would be holding them
+         * against an index a rescan may have replaced. */
+        var targets = SelectedEntries()
+            .Select(e => (Key: e.Key, Dir: e.Dir))
+            .ToList();
+        if (targets.Count == 0) return;
+
+        VerifyingBulk = true;
+        VerifyProgress = $"Verifying 0 of {targets.Count}…";
+        Changed?.Invoke();
+
+        var results = new List<(string Key, VerifyState State)>();
+
+        await Task.Run(() =>
+        {
+            for (var i = 0; i < targets.Count; i++)
+            {
+                var r = Health.VerifyChecksums(targets[i].Dir);
+
+                /* UNKNOWN, not Ok. A folder with no checksums.sha256 has not
+                 * passed and has not failed -- the layout contract says to
+                 * tolerate one -- and recording it as a pass would put a green
+                 * answer in the cache for a folder nothing hashed. */
+                VerifyState state;
+                if (!r.Present) state = VerifyState.Unknown;
+                else if (r.Failed.Count > 0 || r.Missing.Count > 0) state = VerifyState.Failed;
+                else state = VerifyState.Ok;
+
+                results.Add((targets[i].Key, state));
+
+                var n = i + 1;
+                _dispatcher.TryEnqueue(() =>
+                {
+                    VerifyProgress = $"Verifying {n} of {targets.Count}…";
+                    Changed?.Invoke();
+                });
+            }
+        });
+
+        VerifyingBulk = false;
+        VerifyProgress = "";
+        done(FinishBulkVerify(results));
+    }
+
+    /* Back on the UI thread, because the cache stamps every record with the
+     * folder's archive_creation_time and that means a lookup in the index.
+     *
+     * The results go into the same cache the detail page writes: a bulk verify
+     * whose findings the "failed verification" facet could not see would be a
+     * summary you read once and then had no way to act on. */
+    private string FinishBulkVerify(List<(string Key, VerifyState State)> results)
+    {
+        var checkedCount = 0;
+        var bad = 0;
+        var unchecked_ = 0;
+
+        foreach (var (key, state) in results)
+        {
+            if (state == VerifyState.Unknown) { unchecked_++; continue; }
+            checkedCount++;
+            if (state == VerifyState.Failed) bad++;
+
+            var e = Index.Entry(key);
+            if (e is not null) VerifyCache.Set(e, state);
+        }
+        VerifyCache.Save();
+        UpdateCounts();
+
+        /* The summary separates "passed" from "had nothing to check". A folder
+         * with no checksums.sha256 is not a failure, but it is not a pass
+         * either, and folding it into the pass count would be this app claiming
+         * it checked folders it never opened a single hash in. */
+        string note;
+        if (checkedCount == 0)
+        {
+            note = $"Nothing to verify: {unchecked_} folder" +
+                   (unchecked_ == 1 ? " has" : "s have") + " no checksums.sha256.";
+        }
+        else if (bad == 0)
+        {
+            note = $"All {checkedCount} verified.";
+        }
+        else
+        {
+            note = $"{bad} of {checkedCount} failed verification.";
+        }
+
+        if (checkedCount > 0 && unchecked_ > 0)
+        {
+            note += $" {unchecked_} had no checksums.sha256.";
+        }
+        return note;
+    }
+
     /* The playlist the Library is showing may be the very one that just
      * changed, so its key set is rebuilt rather than assumed still right. The
      * WATCHED set needs no such call: the filter holds the store's live

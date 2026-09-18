@@ -182,6 +182,19 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Put a transient line in the status readout.
+    /// </summary>
+    /* The status line rather than a toast, for the reason MainWindow.xaml
+     * already gives about InfoBar: a banner that takes a row of layout is the
+     * wrong weight for "that is done". The next model change overwrites it,
+     * which is the behaviour a transient message wants. */
+    public void SetStatus(string note)
+    {
+        if (note.Length == 0) return;
+        StatusText.Text = note;
+    }
+
+    /// <summary>
     /// Switch to the Downloads pane and say why in the status line.
     /// </summary>
     /* Only the nav item is set: OnSectionChanged is what actually navigates,

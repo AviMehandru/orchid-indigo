@@ -12,11 +12,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using Windows.ApplicationModel.DataTransfer;
 using YtdlWin.Core;
 
 namespace YtdlWin.Views;
@@ -42,6 +44,12 @@ public sealed class VideoCardModel
      * letting "watched" displace "no media file" would hide the more
      * important of the two. */
     public required bool Watched { get; init; }
+    /* Selection mode's tick. On the card model rather than in the GridView's
+     * own SelectedItems, because the grid is rebuilt whenever the filter
+     * changes and a selection expressed as SelectedItems would be silently
+     * emptied by that rebuild -- while the user's selection of KEYS is still
+     * meaningful for whatever is still on screen. */
+    public required bool Selected { get; init; }
     public required string Directory { get; init; }
     public BitmapImage? Thumbnail { get; init; }
 
@@ -51,13 +59,15 @@ public sealed class VideoCardModel
         BadgeText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     public Visibility WatchedVisibility =>
         Watched ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility TickVisibility =>
+        Selected ? Visibility.Visible : Visibility.Collapsed;
     public Visibility PlaceholderVisibility =>
         Thumbnail is null ? Visibility.Visible : Visibility.Collapsed;
 
     /* <paramref name="watched"/> is passed in rather than read from AppModel
      * here, because this type is built on a hot path -- once per card per
      * rebuild -- and the caller already has the store's set in hand. */
-    public static VideoCardModel From(ArchiveEntry e, bool watched)
+    public static VideoCardModel From(ArchiveEntry e, bool watched, bool selected)
     {
         var date = Format.UploadDate(e.UploadDate);
 
@@ -86,6 +96,7 @@ public sealed class VideoCardModel
             Duration = Format.Duration(e.Duration),
             BadgeText = badge,
             Watched = watched,
+            Selected = selected,
             Directory = e.Dir,
             Thumbnail = ThumbnailCache.Load(e.ThumbnailPath),
         };
@@ -409,7 +420,8 @@ public sealed partial class LibraryPage : Page
         _items.Clear();
         foreach (var e in entries)
         {
-            _items.Add(VideoCardModel.From(e, watched.Contains(e.Key)));
+            _items.Add(VideoCardModel.From(e, watched.Contains(e.Key),
+                                           Model.SelectedKeys.Contains(e.Key)));
         }
 
         var empty = entries.Count == 0;
@@ -452,6 +464,171 @@ public sealed partial class LibraryPage : Page
     private void OnItemClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is not VideoCardModel card) return;
+
+        /* In selection mode a click TOGGLES rather than opens. The GridView's
+         * own SelectionMode is left on Single and the tick state is kept on the
+         * model instead, because the grid is rebuilt whenever the filter
+         * changes and a selection expressed as SelectedItems would be silently
+         * emptied by that rebuild -- while the user's selection of KEYS is
+         * still meaningful for whatever is still on screen. */
+        if (Model.Selecting)
+        {
+            if (Model.SelectedKeys.Contains(card.Key)) Model.SelectedKeys.Remove(card.Key);
+            else Model.SelectedKeys.Add(card.Key);
+            RefreshGrid();
+            UpdateBulkBar();
+            return;
+        }
+
         App.Window?.NavigateToDetail(card.Key);
+    }
+
+    // ------------------------------------------------------------------ //
+    // Multi-select and bulk actions                                      //
+    // ------------------------------------------------------------------ //
+
+    private void OnSelectToggled(object sender, RoutedEventArgs e)
+    {
+        Model.Selecting = SelectToggle.IsChecked == true;
+        RefreshGrid();
+        UpdateBulkBar();
+    }
+
+    /* The count, and what is possible with it. */
+    private void UpdateBulkBar()
+    {
+        BulkBar.Visibility = Model.Selecting ? Visibility.Visible : Visibility.Collapsed;
+
+        var n = Model.SelectedKeys.Count;
+        BulkCount.Text = n == 0 ? "Nothing selected" : $"{n} selected";
+        BulkProgress.Text = Model.VerifyProgress;
+
+        var any = n > 0;
+        var writable = !Model.UserData.IsReadOnly;
+
+        BulkWatched.IsEnabled = any && writable;
+        BulkUnwatched.IsEnabled = any && writable;
+        BulkPlaylist.IsEnabled = any && writable;
+        BulkCopy.IsEnabled = any;
+        /* A second bulk verify while one is running would interleave two sets
+         * of counters into one progress line. */
+        BulkVerify.IsEnabled = any && !Model.VerifyingBulk;
+        BulkRefetch.IsEnabled = any;
+
+        RebuildBulkMenus();
+    }
+
+    /* The Add-to-playlist menu is ADD-ONLY, with no tick marks: a mixed
+     * selection where some videos are in a playlist and some are not has no
+     * honest checkbox state, and a control that flipped each one independently
+     * would remove half of them.
+     *
+     * The re-fetch menu is FIXED rather than built from the pipeline's mode
+     * list: only the three no-media modes are refreshable, which is ytdl.ps1's
+     * own rule, and offering "full" here would queue a batch the pipeline
+     * refuses one run at a time. */
+    private void RebuildBulkMenus()
+    {
+        var playlists = new MenuFlyout();
+        if (Model.UserData.Playlists.Count == 0)
+        {
+            playlists.Items.Add(new MenuFlyoutItem
+            {
+                Text = "No playlists yet",
+                IsEnabled = false,
+            });
+        }
+        else
+        {
+            foreach (var pl in Model.UserData.Playlists)
+            {
+                var capturedId = pl.Id;
+                var item = new MenuFlyoutItem { Text = pl.Name };
+                item.Click += (_, _) =>
+                {
+                    App.Window?.SetStatus(Model.BulkAddToPlaylist(capturedId));
+                    RefreshGrid();
+                    UpdateBulkBar();
+                };
+                playlists.Items.Add(item);
+            }
+        }
+        BulkPlaylist.Flyout = playlists;
+
+        var refetch = new MenuFlyout();
+        foreach (var (label, mode) in new[]
+                 {
+                     ("Re-fetch comments", "comments-only"),
+                     ("Re-fetch subtitles", "subs-only"),
+                     ("Re-fetch metadata", "metadata-only"),
+                 })
+        {
+            var capturedMode = mode;
+            var item = new MenuFlyoutItem { Text = label };
+            item.Click += (_, _) =>
+                App.Window?.NavigateToDownloads(Model.BulkRefetch(capturedMode));
+            refetch.Items.Add(item);
+        }
+        BulkRefetch.Flyout = refetch;
+    }
+
+    private void OnBulkSelectAll(object sender, RoutedEventArgs e)
+    {
+        /* Everything the FILTER is showing, not the whole archive: the other
+         * reading is how somebody marks four thousand videos watched by
+         * accident from inside a filtered view. */
+        foreach (var entry in Model.FilteredEntries()) Model.SelectedKeys.Add(entry.Key);
+        RefreshGrid();
+        UpdateBulkBar();
+    }
+
+    private void OnBulkMarkWatched(object sender, RoutedEventArgs e) => BulkWatch(true);
+
+    private void OnBulkMarkUnwatched(object sender, RoutedEventArgs e) => BulkWatch(false);
+
+    private void BulkWatch(bool watched)
+    {
+        var note = Model.BulkSetWatched(watched);
+        if (note.Length > 0) App.Window?.SetStatus(note);
+        RefreshGrid();
+        UpdateBulkBar();
+    }
+
+    private void OnBulkCopyUrls(object sender, RoutedEventArgs e)
+    {
+        var entries = Model.SelectedEntries();
+
+        /* A folder with no OriginalUrl contributes NOTHING rather than a blank
+         * line: a list with holes in it is worse than a shorter list, because
+         * the holes are invisible once it is pasted somewhere. */
+        var urls = entries
+            .Select(x => x.OriginalUrl)
+            .Where(u => !string.IsNullOrEmpty(u))
+            .ToList();
+
+        if (urls.Count == 0)
+        {
+            App.Window?.SetStatus("None of the selected videos recorded a source URL.");
+            return;
+        }
+
+        var package = new DataPackage();
+        package.SetText(string.Join(Environment.NewLine, urls));
+        Clipboard.SetContent(package);
+
+        App.Window?.SetStatus(urls.Count == entries.Count
+            ? $"Copied {urls.Count} URL{(urls.Count == 1 ? "" : "s")}."
+            : $"Copied {urls.Count} of {entries.Count} URLs — the rest recorded none.");
+    }
+
+    private void OnBulkVerify(object sender, RoutedEventArgs e)
+    {
+        Model.BulkVerify(note =>
+        {
+            App.Window?.SetStatus(note);
+            RefreshGrid();
+            UpdateBulkBar();
+        });
+        UpdateBulkBar();
     }
 }

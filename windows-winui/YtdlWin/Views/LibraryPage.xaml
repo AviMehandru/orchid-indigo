@@ -59,6 +59,14 @@
                             has no such problem.
                         -->
                         <StackPanel Orientation="Horizontal" Spacing="6">
+                            <!--
+                                Selection mode's tick. Drawn in the badge row
+                                rather than over the thumbnail so it cannot
+                                cover the duration.
+                            -->
+                            <FontIcon Glyph="&#xE73E;" FontSize="14"
+                                      Visibility="{x:Bind TickVisibility}"
+                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                             <Border Visibility="{x:Bind BadgeVisibility}"
                                     Background="{ThemeResource SubtleFillColorSecondaryBrush}"
                                     CornerRadius="9" Padding="8,2"
@@ -97,6 +105,8 @@
                  not reserve space when it is. -->
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <!-- The bulk bar, revealed with selection mode. -->
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Grid Grid.Row="0" Padding="14,12,14,6" ColumnSpacing="10">
@@ -147,6 +157,19 @@
                         <TextBlock x:Name="FilterLabel" Text="Filter" />
                     </StackPanel>
                 </DropDownButton>
+
+                <!--
+                    The selection-mode switch, in the toolbar rather than in the
+                    bulk bar: a control that dismissed the thing it lives inside
+                    would have nowhere to be when the bar was hidden.
+                -->
+                <ToggleButton x:Name="SelectToggle" Click="OnSelectToggled"
+                              ToolTipService.ToolTip="Select several videos to act on at once">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE73A;" FontSize="14" />
+                        <TextBlock Text="Select" />
+                    </StackPanel>
+                </ToggleButton>
 
                 <Button x:Name="RescanButton" Click="OnRescan"
                         ToolTipService.ToolTip="Re-read the archive from disk (Ctrl+R)">
@@ -200,6 +223,52 @@
                 </ItemsPanelTemplate>
             </muxc:GridView.ItemsPanel>
         </muxc:GridView>
+
+        <!--
+            The bulk bar.
+
+            Every control stays VISIBLE and goes disabled on an empty selection:
+            a bar whose contents appear and disappear as you tick boxes is a bar
+            that moves under the pointer.
+        -->
+        <Border x:Name="BulkBar" Grid.Row="3" Visibility="Collapsed"
+                Padding="14,8" Background="{ThemeResource LayerFillColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8"
+                            VerticalAlignment="Center">
+                    <TextBlock x:Name="BulkCount" Text="Nothing selected"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource CaptionSecondary}" />
+                    <Button Content="Select all" Click="OnBulkSelectAll"
+                            ToolTipService.ToolTip="Everything the current filter is showing — not the whole archive." />
+                    <Button x:Name="BulkWatched" Content="Mark watched"
+                            Click="OnBulkMarkWatched" />
+                    <Button x:Name="BulkUnwatched" Content="Mark unwatched"
+                            Click="OnBulkMarkUnwatched" />
+                    <DropDownButton x:Name="BulkPlaylist" Content="Add to playlist" />
+                </StackPanel>
+
+                <TextBlock x:Name="BulkProgress" Grid.Column="1"
+                           VerticalAlignment="Center" HorizontalAlignment="Right"
+                           Style="{StaticResource CaptionSecondary}" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                            VerticalAlignment="Center">
+                    <Button x:Name="BulkCopy" Content="Copy URLs" Click="OnBulkCopyUrls" />
+                    <Button x:Name="BulkVerify" Content="Verify" Click="OnBulkVerify"
+                            ToolTipService.ToolTip="Re-hashes every file in each selected folder. Seconds per video." />
+                    <DropDownButton x:Name="BulkRefetch" Content="Re-fetch" />
+                </StackPanel>
+            </Grid>
+        </Border>
 
         <!--
             The empty state. Not a centred label: this is the shape Windows uses

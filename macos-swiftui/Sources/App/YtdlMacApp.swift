@@ -158,6 +158,22 @@ final class AppModel: ObservableObject {
     /// publishing a reference that mutates in place announces nothing.
     @Published var userDataRevision = 0
 
+    /* Multi-select.
+     *
+     * A MODE rather than "command-click always multi-selects": the primary
+     * gesture on a card is "open this", and a grid where a stray click adds to
+     * a hidden selection does the wrong thing quietly. */
+    @Published var selecting = false {
+        /* Leaving the mode clears the selection. A selection nothing on screen
+         * is showing is not a selection. */
+        didSet { if !selecting { selectedKeys = [] } }
+    }
+    @Published var selectedKeys: Set<String> = []
+
+    /// Progress for the one bulk action that takes real time.
+    @Published var verifyingBulk = false
+    @Published var verifyProgress = ""
+
     @Published var searchScope: SearchScope = .metadata
     /// The keys the current collection-wide search admits. nil when the scope
     /// needs no index or the field is empty, which is NOT the same as empty:
@@ -507,6 +523,187 @@ final class AppModel: ObservableObject {
         if playlistID == id { playlistID = nil }
         userData.save()
         syncWatchState()
+    }
+
+    // MARK: - Bulk actions
+
+    /// Everything the FILTER is showing, not the whole archive. The other
+    /// reading is how somebody marks four thousand videos watched by accident
+    /// from inside a filtered view.
+    func selectAllShown() {
+        selectedKeys = Set(filteredEntries.map(\.key))
+    }
+
+    func toggleSelection(_ key: String) {
+        if selectedKeys.contains(key) { selectedKeys.remove(key) }
+        else { selectedKeys.insert(key) }
+    }
+
+    /// One save for the whole batch. Saving per video would rewrite the store a
+    /// few hundred times for one button press.
+    func bulkSetWatched(_ watched: Bool) {
+        guard !selectedKeys.isEmpty, !userData.isReadOnly else { return }
+        for key in selectedKeys { userData.setWatched(key, watched) }
+        userData.save()
+        let n = selectedKeys.count
+        status = "Marked \(n) video\(n == 1 ? "" : "s") "
+            + (watched ? "watched." : "unwatched.")
+        syncWatchState()
+    }
+
+    /* ADD-ONLY, and deliberately without a tick state. A mixed selection where
+     * some videos are in a playlist and some are not has no honest checkbox
+     * state, and a control that flipped each one independently would remove
+     * half of them. */
+    func bulkAddToPlaylist(_ id: String) {
+        guard !selectedKeys.isEmpty, !userData.isReadOnly else { return }
+        var added = 0
+        for key in selectedKeys where userData.addToPlaylist(id, key: key) {
+            added += 1
+        }
+        userData.save()
+        let name = userData.playlist(id)?.name ?? "the playlist"
+        status = "Added \(added) video\(added == 1 ? "" : "s") to \(name)."
+        syncWatchState()
+    }
+
+    /// The selected videos' source URLs, newline-separated, or nil when none of
+    /// them recorded one.
+    ///
+    /// A folder with no original_url contributes NOTHING rather than a blank
+    /// line: a list with holes in it is worse than a shorter list, because the
+    /// holes are invisible once it is pasted somewhere.
+    func selectedURLs() -> (text: String, have: Int, total: Int)? {
+        let entries = filteredEntries.filter { selectedKeys.contains($0.key) }
+        let urls = entries.compactMap { e -> String? in
+            guard let u = e.originalURL, !u.isEmpty else { return nil }
+            return u
+        }
+        guard !urls.isEmpty else { return nil }
+        return (urls.joined(separator: "\n"), urls.count, entries.count)
+    }
+
+    /* ONE RUN PER VIDEO, not one run with many URLs. `ytdl --refresh` refreshes
+     * the video it is given; a session with several URLs would be a --sync-like
+     * shape the refusal list rejects, and one that failed halfway would leave
+     * no way to tell which videos were reached. Separate queue entries also
+     * mean a single failure is one red row rather than the whole batch. */
+    func bulkRefetch(mode: String) {
+        guard let runner else { return }
+        let entries = filteredEntries.filter { selectedKeys.contains($0.key) }
+
+        var queued = 0
+        for e in entries {
+            guard let url = e.originalURL, !url.isEmpty else { continue }
+            var opts = RunOptions()
+            opts.url = url
+            opts.mode = mode
+            opts.refresh = true
+            do {
+                try runner.enqueue(opts)
+                queued += 1
+            } catch {
+                /* A failure to QUEUE -- a full queue, an unwritable state
+                 * directory -- stops the batch rather than silently dropping
+                 * the rest of it. Carrying on would report a count that was
+                 * never true. */
+                status = "Queued \(queued) before failing: "
+                    + error.localizedDescription
+                section = .downloads
+                return
+            }
+        }
+
+        guard queued > 0 else {
+            status = "None of the selected videos recorded a source URL."
+            return
+        }
+        status = "Queued \(queued) \(mode) refresh\(queued == 1 ? "" : "es")."
+        section = .downloads
+    }
+
+    /// Verify every selected folder. Seconds per video, so it runs off the main
+    /// thread with a progress readout.
+    func bulkVerify() {
+        guard !verifyingBulk, !selectedKeys.isEmpty else { return }
+
+        /* The keys and directories are copied out HERE, while the index is
+         * known to be current. A worker holding entries would be holding them
+         * against an index a rescan may have replaced. */
+        let targets = filteredEntries
+            .filter { selectedKeys.contains($0.key) }
+            .map { (key: $0.key, dir: $0.dir) }
+        guard !targets.isEmpty else { return }
+
+        verifyingBulk = true
+        verifyProgress = "Verifying 0 of \(targets.count)…"
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var results: [(String, VerifyState)] = []
+            for (i, t) in targets.enumerated() {
+                let r = Health.verifyChecksums(videoDir: t.dir)
+                /* UNKNOWN, not ok. A folder with no checksums.sha256 has not
+                 * passed and has not failed -- the layout contract says to
+                 * tolerate one -- and recording it as a pass would put a green
+                 * answer in the cache for a folder nothing hashed. */
+                let state: VerifyState
+                if !r.present { state = .unknown }
+                else if !r.failed.isEmpty || !r.missing.isEmpty { state = .failed }
+                else { state = .ok }
+                results.append((t.key, state))
+
+                let done = i + 1
+                DispatchQueue.main.async {
+                    self?.verifyProgress = "Verifying \(done) of \(targets.count)…"
+                }
+            }
+
+            DispatchQueue.main.async { self?.finishBulkVerify(results) }
+        }
+    }
+
+    /* On the MAIN thread, because the cache stamps every record with the
+     * folder's archive_creation_time and that means a lookup in the index.
+     *
+     * The results go into the same cache the detail page writes: a bulk verify
+     * whose findings the "failed verification" facet could not see would be a
+     * summary you read once and then had no way to act on. */
+    private func finishBulkVerify(_ results: [(String, VerifyState)]) {
+        verifyingBulk = false
+        verifyProgress = ""
+
+        var checked = 0
+        var bad = 0
+        var unchecked = 0
+
+        for (key, state) in results {
+            guard state != .unknown else { unchecked += 1; continue }
+            checked += 1
+            if state == .failed { bad += 1 }
+            if let e = index.entry(forKey: key) { verifyCache.set(state, for: e) }
+        }
+        verifyCache.save()
+
+        /* The summary separates "passed" from "had nothing to check". A folder
+         * with no checksums.sha256 is not a failure, but it is not a pass
+         * either, and folding it into the pass count would be this app claiming
+         * it checked folders it never opened a single hash in. */
+        var note: String
+        if checked == 0 {
+            note = "Nothing to verify: \(unchecked) folder"
+                + (unchecked == 1 ? " has" : "s have") + " no checksums.sha256."
+        } else if bad == 0 {
+            note = "All \(checked) verified."
+        } else {
+            note = "\(bad) of \(checked) failed verification."
+        }
+        if checked > 0 && unchecked > 0 {
+            note += " \(unchecked) had no checksums.sha256."
+        }
+
+        status = note
+        objectWillChange.send()
+        updateCounts()
     }
 
     /// How many videos are marked watched, so the facet can say what it is a
