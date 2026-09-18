@@ -40,6 +40,18 @@ public sealed class RunOptions
     public string DataRoot { get; set; } = "";
 
     public bool Sync { get; set; }
+
+    /// <summary>
+    /// <c>ytdl --refresh</c>: this video is already archived; re-fetch the
+    /// component the mode names and MERGE it into the folder that exists,
+    /// rather than relabelling that folder as a comments-only download.
+    /// </summary>
+    /* Not validated here for the same reason no other option is -- ytdl.ps1
+     * refuses --refresh without one of the no-media modes, and refuses it with
+     * --sync or --probe, and its refusal is the one that matters. An app that
+     * second-guessed the pipeline's rules would be a second copy of them. */
+    public bool Refresh { get; set; }
+
     public string Items { get; set; } = "";
     public string After { get; set; } = "";
     public bool Lazy { get; set; }
@@ -74,7 +86,8 @@ public sealed class RunOptions
 
     public RunOptions Clone() => new()
     {
-        Url = Url, DataRoot = DataRoot, Sync = Sync, Items = Items, After = After,
+        Url = Url, DataRoot = DataRoot, Sync = Sync, Refresh = Refresh,
+        Items = Items, After = After,
         Lazy = Lazy, Workers = Workers, NoPot = NoPot, SkipPotUpdate = SkipPotUpdate,
         PotPort = PotPort, Mode = Mode, Quality = Quality, Codec = Codec,
         AudioCodec = AudioCodec, Container = Container, NoComments = NoComments,
@@ -122,6 +135,7 @@ public sealed class RunOptions
             v.Add(Paths.ExpandTilde(DataRoot.Trim()));
         }
         if (Sync) v.Add("--sync");
+        if (Refresh) v.Add("--refresh");
         if (IsSet(Items)) { v.Add("--items"); v.Add(Items.Trim()); }
         if (IsSet(After)) { v.Add("--after"); v.Add(After.Trim()); }
         if (Lazy) v.Add("--lazy");
@@ -227,6 +241,7 @@ public sealed class RunOptions
         WriteIfSet(w, "url", Url);
         WriteIfSet(w, "data_root", DataRoot);
         w.WriteBoolean("sync", Sync);
+        w.WriteBoolean("refresh", Refresh);
         WriteIfSet(w, "items", Items);
         WriteIfSet(w, "after", After);
         w.WriteBoolean("lazy", Lazy);
@@ -268,6 +283,7 @@ public sealed class RunOptions
         o.Url = e.Str("url") ?? "";
         o.DataRoot = e.Str("data_root") ?? "";
         o.Sync = e.Bool("sync");
+        o.Refresh = e.Bool("refresh");
         o.Items = e.Str("items") ?? "";
         o.After = e.Str("after") ?? "";
         o.Lazy = e.Bool("lazy");

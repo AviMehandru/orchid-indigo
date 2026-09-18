@@ -150,6 +150,10 @@ public sealed partial class DetailPage : Page
         SyncWatchedToggle();
         RebuildPlaylistMenu();
 
+        RefetchRow.Visibility = string.IsNullOrEmpty(entry.OriginalUrl)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
         var player = ExternalOpen.FindPlayer();
         OpenInPlayerButton.Content = player is null ? "Open externally" : $"Open in {player.Value.Display}";
         OpenInPlayerButton.IsEnabled = entry.MediaPath is not null;
@@ -307,6 +311,46 @@ public sealed partial class DetailPage : Page
     private void OnReveal(object sender, RoutedEventArgs e)
     {
         if (Entry is { } entry) ExternalOpen.RevealInExplorer(entry.MediaPath ?? entry.Dir);
+    }
+
+    // ------------------------------------------------------------------ //
+    // Re-fetch                                                           //
+    // ------------------------------------------------------------------ //
+
+    private void OnRefetchComments(object sender, RoutedEventArgs e) =>
+        Refetch("comments-only");
+
+    private void OnRefetchSubs(object sender, RoutedEventArgs e) =>
+        Refetch("subs-only");
+
+    private void OnRefetchMetadata(object sender, RoutedEventArgs e) =>
+        Refetch("metadata-only");
+
+    /// <summary>
+    /// Queue a refresh of one component of this video.
+    /// </summary>
+    /* URL, mode and --refresh. NOTHING is carried over from whatever is typed
+     * on the Downloads form: a refresh is a re-fetch of one component of one
+     * video, not a re-run of someone's half-filled form.
+     *
+     * This is only correct because `ytdl --refresh` exists. Without it,
+     * --mode comments-only against an archived video does nothing at all --
+     * yt-dlp skips the id, and even past that --no-overwrites leaves the
+     * info.json in place so --exec after_move never fires and postprocess.ps1
+     * never runs. The session ends clean, exit 0, having changed nothing. */
+    private void Refetch(string mode)
+    {
+        var url = Entry?.OriginalUrl;
+        if (string.IsNullOrEmpty(url)) return;
+
+        Model.Runner.Enqueue(new RunOptions
+        {
+            Url = url,
+            Mode = mode,
+            Refresh = true,
+        });
+
+        App.Window?.NavigateToDownloads($"Queued a {mode} refresh.");
     }
 
     // ------------------------------------------------------------------ //

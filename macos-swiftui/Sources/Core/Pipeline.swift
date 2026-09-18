@@ -32,6 +32,17 @@ struct RunOptions: Equatable {
     var dataRoot: String = ""
 
     var sync = false
+
+    /* `ytdl --refresh`: this video is already archived; re-fetch the component
+     * the mode names and MERGE it into the folder that exists, rather than
+     * relabelling that folder as a comments-only download.
+     *
+     * Not validated here for the same reason no other option is -- ytdl.ps1
+     * refuses --refresh without one of the no-media modes, and refuses it with
+     * --sync or --probe, and its refusal is the one that matters. An app that
+     * second-guessed the pipeline's rules would be a second copy of them. */
+    var refresh = false
+
     var items: String = ""
     var after: String = ""
     var lazy = false
@@ -108,6 +119,7 @@ extension RunOptions {
             v.append(Paths.expandTilde(dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
         if sync { v.append("--sync") }
+        if refresh { v.append("--refresh") }
         if RunOptions.isNonEmpty(items) {
             v.append("--items")
             v.append(items.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -199,6 +211,7 @@ extension RunOptions {
     func toJSON() -> [String: Any] {
         var o: [String: Any] = [
             "sync": sync,
+            "refresh": refresh,
             "lazy": lazy,
             "workers": workers,
             "no_pot": noPot,
@@ -231,6 +244,7 @@ extension RunOptions {
         o.url = obj.str("url") ?? ""
         o.dataRoot = obj.str("data_root") ?? ""
         o.sync = obj.bool("sync")
+        o.refresh = obj.bool("refresh")
         o.items = obj.str("items") ?? ""
         o.after = obj.str("after") ?? ""
         o.lazy = obj.bool("lazy")

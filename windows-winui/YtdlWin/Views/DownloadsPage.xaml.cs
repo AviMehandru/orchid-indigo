@@ -1233,7 +1233,7 @@ public sealed partial class DownloadsPage : Page
         return grid;
     }
 
-    private static UIElement BuildHistoryRow(RunRecord record)
+    private UIElement BuildHistoryRow(RunRecord record)
     {
         var variant = record.State switch
         {
@@ -1278,6 +1278,31 @@ public sealed partial class DownloadsPage : Page
             TextTrimming = TextTrimming.CharacterEllipsis,
             Foreground = Controls.Resource<Brush>("TextFillColorSecondaryBrush"),
         });
-        return panel;
+
+        /* Re-enqueues the record's OWN options, which RunRecord already carries
+         * whole. Reconstructing them by parsing record.Command back into flags
+         * would be a second, worse copy of the argument builder -- and the one
+         * place it would go wrong is a quoted URL with a space in it, which is
+         * exactly the run someone wants to repeat.
+         *
+         * A run with no URL cannot be repeated: it came from a build before
+         * options were recorded, or from a hand-edited file. */
+        var again = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE72C", FontSize = 14 },
+            VerticalAlignment = VerticalAlignment.Top,
+            IsEnabled = record.Opts.Url.Length > 0,
+        };
+        ToolTipService.SetToolTip(again, "Queue this run again with the same options");
+        again.Click += (_, _) => Model.Runner.Enqueue(record.Opts.Clone());
+
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(panel, 0);
+        Grid.SetColumn(again, 1);
+        row.Children.Add(panel);
+        row.Children.Add(again);
+        return row;
     }
 }

@@ -17,6 +17,7 @@ import SwiftUI
 
 struct DetailView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var runner: Runner
     let key: String
 
     @State private var loaded: LoadedDetail?
@@ -72,6 +73,7 @@ struct DetailView: View {
             header
             playerArea
             actions
+            refetchRow
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases) { t in
                     Label(t.title, systemImage: t.symbol).tag(t)
@@ -489,6 +491,56 @@ struct DetailView: View {
             ForEach(entry.files) { file in
                 KeyValueRow(key: file.rel, value: Format.bytes(file.size), monospaced: false)
             }
+        }
+    }
+
+    // MARK: - Re-fetch
+
+    /* A row of its own rather than three more buttons beside Verify, because
+     * these are the only controls on this page that WRITE. Everything else
+     * here reads the archive; these queue a pipeline run that will rewrite
+     * this folder, and the separation is the warning.
+     *
+     * Hidden entirely when the folder has no original_url -- there is nothing
+     * to re-fetch FROM, and a disabled button with no explanation is worse
+     * than no button. */
+    @ViewBuilder
+    private var refetchRow: some View {
+        if let url = entry?.originalURL, !url.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    refetchButton("Re-fetch comments", mode: "comments-only", url: url)
+                    refetchButton("Re-fetch subtitles", mode: "subs-only", url: url)
+                    refetchButton("Re-fetch metadata", mode: "metadata-only", url: url)
+                }
+                Text("Re-fetching merges into this folder: the media file, and "
+                     + "which mode originally wrote it, are preserved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+
+    private func refetchButton(_ title: String, mode: String, url: String) -> some View {
+        Button(title) { refetch(mode: mode, url: url) }
+    }
+
+    /* URL, mode and --refresh. NOTHING is carried over from whatever is typed
+     * on the Downloads form: a refresh is a re-fetch of one component of one
+     * video, not a re-run of someone's half-filled form. */
+    private func refetch(mode: String, url: String) {
+        var opts = RunOptions()
+        opts.url = url
+        opts.mode = mode
+        opts.refresh = true
+
+        do {
+            try runner.enqueue(opts)
+            model.section = .downloads
+            model.status = "Queued a \(mode) refresh."
+        } catch {
+            model.alert = error.localizedDescription
         }
     }
 

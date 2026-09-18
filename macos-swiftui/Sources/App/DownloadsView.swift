@@ -1063,21 +1063,42 @@ struct DownloadsView: View {
 // MARK: - Pieces
 
 private struct HistoryRow: View {
+    @EnvironmentObject private var runner: Runner
     let record: RunRecord
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Pill(text: record.state, variant: variant)
-                Text(record.command)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Pill(text: record.state, variant: variant)
+                    Text(record.command)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            Text(subtitle)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            /* Re-enqueues the record's OWN options, which RunRecord already
+             * carries whole. Reconstructing them by parsing `record.command`
+             * back into flags would be a second, worse copy of the argument
+             * builder -- and the one place it would go wrong is a quoted URL
+             * with a space in it, which is exactly the run someone wants to
+             * repeat. */
+            Button {
+                try? runner.enqueue(record.opts)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Queue this run again with the same options")
+            /* A run with no URL cannot be repeated: it came from a build
+             * before options were recorded, or from a hand-edited file. */
+            .disabled(record.opts.url.isEmpty)
         }
     }
 

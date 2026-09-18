@@ -181,6 +181,31 @@ public sealed partial class MainWindow : Window
         Nav.IsBackEnabled = canGoBack;
     }
 
+    /// <summary>
+    /// Switch to the Downloads pane and say why in the status line.
+    /// </summary>
+    /* Only the nav item is set: OnSectionChanged is what actually navigates,
+     * so driving the frame here as well would navigate twice and clear the
+     * back stack on the second one.
+     *
+     * The status line rather than a toast, for the reason MainWindow.xaml
+     * already gives about InfoBar: a banner that takes a row of layout is the
+     * wrong weight for "this is queued". The next model change overwrites it,
+     * which is the behaviour a transient message wants. */
+    public void NavigateToDownloads(string note)
+    {
+        foreach (var candidate in Nav.MenuItems)
+        {
+            if (candidate is NavigationViewItem item &&
+                (item.Tag as string) == "downloads")
+            {
+                Nav.SelectedItem = item;
+                break;
+            }
+        }
+        StatusText.Text = note;
+    }
+
     /// Navigate the shared frame, which is how the Library opens a video.
     public void NavigateToDetail(string key)
     {

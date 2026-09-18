@@ -10,6 +10,8 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <!-- The re-fetch strip. -->
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
@@ -89,8 +91,29 @@
                        Style="{StaticResource CaptionSecondary}" />
         </StackPanel>
 
+        <!--
+            A row of its own rather than three more buttons beside Verify,
+            because these are the only controls on this page that WRITE.
+            Everything else here reads the archive; these queue a pipeline run
+            that will rewrite this folder, and the separation is the warning.
+
+            Collapsed entirely when the folder has no original_url -- there is
+            nothing to re-fetch FROM, and a disabled button with no explanation
+            is worse than no button.
+        -->
+        <StackPanel x:Name="RefetchRow" Grid.Row="3" Spacing="4"
+                    Visibility="Collapsed" Margin="0,8,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Re-fetch comments" Click="OnRefetchComments" />
+                <Button Content="Re-fetch subtitles" Click="OnRefetchSubs" />
+                <Button Content="Re-fetch metadata" Click="OnRefetchMetadata" />
+            </StackPanel>
+            <TextBlock Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap"
+                       Text="Re-fetching merges into this folder: the media file, and which mode originally wrote it, are preserved." />
+        </StackPanel>
+
         <muxc:NavigationView
-            Grid.Row="3"
+            Grid.Row="4"
             x:Name="Tabs"
             PaneDisplayMode="Top"
             IsBackButtonVisible="Collapsed"
@@ -105,7 +128,7 @@
             </muxc:NavigationView.MenuItems>
         </muxc:NavigationView>
 
-        <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" Padding="0,10,10,14">
+        <ScrollViewer Grid.Row="5" VerticalScrollBarVisibility="Auto" Padding="0,10,10,14">
             <StackPanel x:Name="TabContent" MaxWidth="{StaticResource PaneMaxWidth}"
                         HorizontalAlignment="Left" Spacing="4" />
         </ScrollViewer>
