@@ -59,6 +59,16 @@ public sealed partial class DetailPage : Page
      * now. */
     private CancellationTokenSource? _loadCancel;
 
+    /* Set while the toggle is being driven from the store rather than from a
+     * click, so the handler does not write back what it just read. */
+    private bool _syncingToggle;
+
+    /* Samples the player's position. Five seconds: short enough that a crash
+     * loses almost nothing, long enough that the store is not rewritten while
+     * anyone is watching the disk light. A timer rather than a position
+     * changed event, which fires far more often than the store needs. */
+    private DispatcherTimer? _positionTick;
+
     private AppModel Model => AppModel.Current;
     private ArchiveEntry? Entry => Model.Entry(_key);
 
@@ -79,6 +89,11 @@ public sealed partial class DetailPage : Page
     {
         base.OnNavigatedFrom(e);
         _loadCancel?.Cancel();
+
+        /* BEFORE the player is disposed: once it is gone there is no position
+         * to read, and leaving the page is the commonest way a video stops. */
+        RecordPosition(onlyWhilePlaying: false);
+        StopPositionTick();
 
         /* LEAVING THE PAGE STOPS PLAYBACK, and this is hung on the navigation
          * event rather than on a back button because there are several ways out
@@ -132,6 +147,8 @@ public sealed partial class DetailPage : Page
             HeaderBadges.Children.Add(Controls.Pill(entry.DownloadMode ?? "no media file"));
 
         SetUpPlayer(entry);
+        SyncWatchedToggle();
+        RebuildPlaylistMenu();
 
         var player = ExternalOpen.FindPlayer();
         OpenInPlayerButton.Content = player is null ? "Open externally" : $"Open in {player.Value.Display}";
@@ -192,6 +209,7 @@ public sealed partial class DetailPage : Page
     {
         PlaybackNote.Visibility = Visibility.Collapsed;
         Player.Visibility = Visibility.Collapsed;
+        ResumeNote.Visibility = Visibility.Collapsed;
 
         var media = entry.MediaPath;
         if (media is null) return;
@@ -204,8 +222,30 @@ public sealed partial class DetailPage : Page
                 Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(media)),
             };
             player.MediaFailed += OnMediaFailed;
+
+            /* Seeked on the PlaybackSession rather than on the player, and
+             * before the element is shown. The session accepts a position
+             * against a source that has not finished opening and applies it
+             * when it has, which is why this needs no readiness handler. */
+            var resume = Model.ResumePosition(_key);
+            if (resume > 0)
+            {
+                try
+                {
+                    player.PlaybackSession.Position = TimeSpan.FromSeconds(resume);
+                }
+                catch (Exception)
+                {
+                    /* A source that refuses a seek is not a reason to refuse
+                     * to play it; it simply starts at the beginning. */
+                }
+                ResumeNote.Text = $"Resuming from {Format.Clock(resume)}";
+                ResumeNote.Visibility = Visibility.Visible;
+            }
+
             Player.SetMediaPlayer(player);
             Player.Visibility = Visibility.Visible;
+            StartPositionTick();
         }
         catch (Exception)
         {
@@ -267,6 +307,169 @@ public sealed partial class DetailPage : Page
     private void OnReveal(object sender, RoutedEventArgs e)
     {
         if (Entry is { } entry) ExternalOpen.RevealInExplorer(entry.MediaPath ?? entry.Dir);
+    }
+
+    // ------------------------------------------------------------------ //
+    // Watch state and playlists                                          //
+    // ------------------------------------------------------------------ //
+
+    /* Put the toggle where the store says, WITHOUT writing back. */
+    private void SyncWatchedToggle()
+    {
+        _syncingToggle = true;
+        WatchedToggle.IsChecked = Model.IsWatched(_key);
+        _syncingToggle = false;
+
+        /* The one state worth saying out loud: a store that would not parse.
+         * Saying nothing here would let someone tick "watched" through a whole
+         * evening and find none of it kept. */
+        var readOnly = Model.UserData.IsReadOnly;
+        WatchedToggle.IsEnabled = !readOnly;
+        PlaylistButton.IsEnabled = !readOnly;
+        if (readOnly)
+        {
+            ToolTipService.SetToolTip(
+                WatchedToggle,
+                "userdata.json could not be read, so watch state is read-only this "
+                + "session. The file has been left alone rather than replaced.");
+        }
+    }
+
+    private void OnWatchedToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncingToggle) return;
+
+        var on = WatchedToggle.IsChecked == true;
+        Model.SetWatched(_key, on);
+
+        /* Marking it watched clears the resume point (UserData does that), so
+         * the note goes with it or it would offer to resume a video the user
+         * just said they had finished. */
+        if (on) ResumeNote.Visibility = Visibility.Collapsed;
+    }
+
+    /* Rebuilt rather than kept, because the item for each playlist has to show
+     * whether THIS video is in it, and that changes on every page. */
+    private void RebuildPlaylistMenu()
+    {
+        var flyout = new MenuFlyout();
+
+        foreach (var pl in Model.UserData.Playlists)
+        {
+            var capturedId = pl.Id;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = pl.Name,
+                IsChecked = Model.UserData.PlaylistContains(capturedId, _key),
+            };
+            item.Click += (_, _) =>
+            {
+                Model.TogglePlaylistMembership(capturedId, _key);
+                RebuildPlaylistMenu();
+            };
+            flyout.Items.Add(item);
+        }
+
+        if (Model.UserData.Playlists.Count > 0)
+        {
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+
+        var create = new MenuFlyoutItem { Text = "New playlist…" };
+        create.Click += OnNewPlaylist;
+        flyout.Items.Add(create);
+
+        PlaylistButton.Flyout = flyout;
+    }
+
+    private async void OnNewPlaylist(object sender, RoutedEventArgs e)
+    {
+        var box = new TextBox { PlaceholderText = "Name" };
+        var dialog = new ContentDialog
+        {
+            Title = "New playlist",
+            Content = box,
+            PrimaryButtonText = "Create",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+
+        try
+        {
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        }
+        catch (Exception) { return; }
+
+        /* A blank name is refused by UserData -- an unnamed playlist is
+         * unfindable -- and a null return here is that refusal, not an
+         * error. */
+        if (Model.CreatePlaylist(box.Text, adding: _key) is null) return;
+        RebuildPlaylistMenu();
+    }
+
+    // ------------------------------------------------------------------ //
+    // Resume points                                                      //
+    // ------------------------------------------------------------------ //
+
+    private void StartPositionTick()
+    {
+        StopPositionTick();
+        _positionTick = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _positionTick.Tick += (_, _) => RecordPosition(onlyWhilePlaying: true);
+        _positionTick.Start();
+    }
+
+    private void StopPositionTick()
+    {
+        if (_positionTick is null) return;
+        _positionTick.Stop();
+        _positionTick = null;
+    }
+
+    /// <summary>
+    /// Sample the player and store where it got to. The three rules --
+    /// finished clears the resume point, a glance stores nothing, anything
+    /// else is kept -- are UserData's; this only reads the clock.
+    /// </summary>
+    private void RecordPosition(bool onlyWhilePlaying)
+    {
+        if (Model.UserData.IsReadOnly || _key.Length == 0) return;
+
+        var player = Player.MediaPlayer;
+        if (player is null) return;
+
+        try
+        {
+            var session = player.PlaybackSession;
+
+            /* A paused player sampled every five seconds would rewrite the
+             * same number forever. Leaving the page is the exception: there
+             * the player is about to be disposed and the last position is
+             * exactly the one worth keeping. */
+            if (onlyWhilePlaying &&
+                session.PlaybackState != Windows.Media.Playback.MediaPlaybackState.Playing)
+            {
+                return;
+            }
+
+            var seconds = session.Position.TotalSeconds;
+            if (seconds <= 0) return;
+
+            /* The SESSION's duration, not the manifest's: the session knows
+             * what is in the file, and a folder whose media was replaced by
+             * `ytdl --refresh` is exactly where the two differ. */
+            var duration = session.NaturalDuration.TotalSeconds;
+            if (duration <= 0) duration = Math.Max(0, Entry?.Duration ?? 0);
+
+            if (Model.RecordPosition(_key, seconds, duration)) SyncWatchedToggle();
+        }
+        catch (Exception)
+        {
+            /* A torn-down session throws rather than answering. Losing one
+             * five-second sample is not worth an exception escaping into the
+             * navigation teardown. */
+        }
     }
 
     private async void OnVerify(object sender, RoutedEventArgs e)

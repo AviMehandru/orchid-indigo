@@ -59,11 +59,30 @@
             </StackPanel>
         </Border>
 
+        <!--
+            A line, not a dialogue. Asking "resume or start over?" before every
+            video is a decision per playback for a choice that is almost always
+            the same one, and the transport controls are already the way back
+            to the start.
+        -->
+        <TextBlock x:Name="ResumeNote" Grid.Row="1" Visibility="Collapsed"
+                   VerticalAlignment="Bottom" Margin="4,0,0,4"
+                   Style="{StaticResource CaptionSecondary}" />
+
         <!-- Actions -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
             <Button x:Name="OpenInPlayerButton" Click="OnOpenInPlayer"
                     ToolTipService.ToolTip="mpv and VLC play every codec combination this pipeline produces, and read the embedded subtitles and chapters." />
             <Button Content="Show in Explorer" Click="OnReveal" />
+            <!--
+                A ToggleButton rather than a Button, because the state is the
+                point: the control has to say whether this video is already
+                marked, not just offer to mark it.
+            -->
+            <ToggleButton x:Name="WatchedToggle" Content="Watched"
+                          Click="OnWatchedToggled"
+                          ToolTipService.ToolTip="Kept in userdata.json beside your settings — never inside the archive folder, which checksums.sha256 covers." />
+            <DropDownButton x:Name="PlaylistButton" Content="Playlists" />
             <Button Content="Verify checksums" Click="OnVerify"
                     ToolTipService.ToolTip="Re-hashes every file in this folder against the checksums.sha256 postprocess.ps1 wrote." />
             <TextBlock x:Name="VerifyText" VerticalAlignment="Center"

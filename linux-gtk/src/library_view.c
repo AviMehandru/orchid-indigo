@@ -297,6 +297,15 @@ on_bind_item (GtkSignalListItemFactory *factory, GtkListItem *item,
   if (e->layout_too_new)
     add_badge (badges, "newer archive layout", "warn");
 
+  /* Watch state, read straight off the filter's borrowed set rather than
+   * through another copy. A "watched" flag you can only FILTER by and never
+   * see is half a feature: the question in front of someone scrolling a
+   * library is "have I seen this one", and a facet answers it only by hiding
+   * everything else. */
+  if (self->filter->watched_keys != NULL
+      && g_hash_table_contains (self->filter->watched_keys, e->key))
+    add_badge (badges, "watched", NULL);
+
   /* A folder `ytdl --refresh` has been over. Worth a badge because it is the
    * one case where the sidecars are newer than the media -- the comments on
    * this video were fetched after it was archived, which is exactly the

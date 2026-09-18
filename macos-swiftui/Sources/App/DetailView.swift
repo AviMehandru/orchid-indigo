@@ -25,6 +25,20 @@ struct DetailView: View {
     @State private var verifyText = ""
     @State private var verifyVariant: Pill.Variant = .neutral
     @State private var tab: Tab = .details
+    @State private var showingNewPlaylist = false
+    @State private var newPlaylistName = ""
+    /// Shown under the player when the video was resumed rather than started.
+    /// A line, not a dialogue: asking "resume or start over?" before every
+    /// video is a decision per playback for a choice that is almost always
+    /// the same one, and the scrubber is already the way back to the start.
+    @State private var resumedFrom: Double = 0
+
+    /* Five seconds. Short enough that a crash loses almost nothing, long
+     * enough that the store is not rewritten while anyone is watching the
+     * disk light. A timer rather than a periodic time observer on the player
+     * because the store, not the UI, is what is being kept up to date. */
+    private let positionTick = Timer.publish(every: 5, on: .main, in: .common)
+        .autoconnect()
 
     enum Tab: String, CaseIterable, Identifiable {
         case details, media, comments, transcript, files
@@ -73,7 +87,24 @@ struct DetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(entry?.title ?? "Video")
         .task(id: key) { await load() }
+        .onReceive(positionTick) { _ in
+            /* Only while it is actually moving. A paused player sampled every
+             * five seconds would rewrite the same number forever. */
+            guard let player, player.timeControlStatus == .playing else { return }
+            recordPosition()
+        }
+        .alert("New playlist", isPresented: $showingNewPlaylist) {
+            TextField("Name", text: $newPlaylistName)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") {
+                model.createPlaylist(named: newPlaylistName, adding: key)
+            }
+        }
         .onDisappear {
+            /* BEFORE the item is dropped: once the player is gone there is no
+             * timestamp to read, and leaving the page is the commonest way a
+             * video stops. */
+            recordPosition()
             /* Leaving the page stops playback. An AVPlayer left holding an item
              * goes on decoding audio after the window has moved elsewhere, and
              * sound continuing after Back is the kind of thing people remember
@@ -141,6 +172,12 @@ struct DetailView: View {
                     VideoPlayer(player: player)
                         .frame(height: 320)
                         .padding(.horizontal, 14)
+                    if resumedFrom > 0 {
+                        Text("Resuming from \(Format.clock(resumedFrom))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 14)
+                    }
                 } else {
                     Color.clear.frame(height: 320)
                 }
@@ -185,6 +222,42 @@ struct DetailView: View {
             } label: {
                 Label("Reveal in Finder", systemImage: "folder")
             }
+
+            /* A toggle rather than a button, because the state is the point:
+             * the control has to say whether this video is already marked,
+             * not just offer to mark it. It sits with the other per-video
+             * actions rather than in the toolbar, since it is a fact about
+             * this video like the others. */
+            Toggle(isOn: watchedBinding) {
+                Label("Watched", systemImage: "eye")
+            }
+            .toggleStyle(.button)
+            .disabled(model.userData.isReadOnly)
+            .help(model.userData.isReadOnly
+                  ? "userdata.json could not be read, so watch state is read-only "
+                    + "this session. The file has been left alone rather than replaced."
+                  : "Kept in userdata.json beside your settings — never inside the "
+                    + "archive folder, which checksums.sha256 covers.")
+
+            /* Playlist membership. A Menu rather than a sheet: adding a video
+             * to a list is one click's worth of decision, and a modal for it
+             * would be three. */
+            Menu {
+                ForEach(model.userData.playlists) { pl in
+                    Button {
+                        model.togglePlaylistMembership(pl.id, key: key)
+                    } label: {
+                        Label(pl.name,
+                              systemImage: model.userData.playlistContains(pl.id, key: key)
+                                  ? "checkmark" : "")
+                    }
+                }
+                if !model.userData.playlists.isEmpty { Divider() }
+                Button("New playlist…") { newPlaylistName = ""; showingNewPlaylist = true }
+            } label: {
+                Label("Playlists", systemImage: "list.bullet")
+            }
+            .disabled(model.userData.isReadOnly)
 
             Button {
                 verify()
@@ -419,6 +492,39 @@ struct DetailView: View {
         }
     }
 
+    // MARK: - Watch state
+
+    private var watchedBinding: Binding<Bool> {
+        Binding(get: { model.isWatched(key) },
+                set: { on in
+                    model.setWatched(key, on)
+                    /* Marking it watched clears the resume point (UserData
+                     * does that), so the note goes with it or it would offer
+                     * to resume a video the user just said they finished. */
+                    if on { resumedFrom = 0 }
+                })
+    }
+
+    /// Sample the player and store where it got to.
+    ///
+    /// The three rules -- finished clears the resume point, a glance stores
+    /// nothing, anything else is kept -- are UserData's. This only reads the
+    /// clock, and takes the DURATION from the player rather than from the
+    /// manifest: the player knows what is in the file, and a folder whose
+    /// media was replaced by `ytdl --refresh` is exactly where they differ.
+    private func recordPosition() {
+        guard let player, let item = player.currentItem else { return }
+        guard !model.userData.isReadOnly else { return }
+
+        let seconds = player.currentTime().seconds
+        guard seconds.isFinite, seconds > 0 else { return }
+
+        let raw = item.duration.seconds
+        let duration = raw.isFinite && raw > 0 ? raw : (entry?.duration ?? 0)
+
+        model.recordPosition(key, seconds: seconds, duration: max(0, duration))
+    }
+
     // MARK: - Loading
 
     private func load() async {
@@ -431,8 +537,22 @@ struct DetailView: View {
          * not start making noise. */
         player?.pause()
         player = nil
+        resumedFrom = 0
         if let media = entry.mediaPath, Media.canPlayInWindow(path: media) {
-            player = AVPlayer(url: URL(fileURLWithPath: media))
+            let p = AVPlayer(url: URL(fileURLWithPath: media))
+
+            /* Seeked before the player is handed to the view. AVPlayer accepts
+             * a seek against an item that has not finished loading and honours
+             * it once it has, which is why this needs no readiness observer --
+             * the AVFoundation equivalent of the GTK port's notify::prepared
+             * dance, done for it. */
+            let resume = model.resumePosition(key)
+            if resume > 0 {
+                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600),
+                       toleranceBefore: .zero, toleranceAfter: .zero)
+                resumedFrom = resume
+            }
+            player = p
         }
 
         let dir = entry.dir

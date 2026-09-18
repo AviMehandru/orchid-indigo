@@ -58,14 +58,32 @@
                             user scrolls far enough to reuse a container. Bound text
                             has no such problem.
                         -->
-                        <Border Visibility="{x:Bind BadgeVisibility}"
-                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                                CornerRadius="9" Padding="8,2"
-                                HorizontalAlignment="Left">
-                            <TextBlock Text="{x:Bind BadgeText}" FontSize="11"
-                                       FontWeight="SemiBold"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </Border>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Border Visibility="{x:Bind BadgeVisibility}"
+                                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                    CornerRadius="9" Padding="8,2"
+                                    HorizontalAlignment="Left">
+                                <TextBlock Text="{x:Bind BadgeText}" FontSize="11"
+                                           FontWeight="SemiBold"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Border>
+                            <!--
+                                Watch state, as a SECOND pill. A "watched" flag
+                                you can only filter by and never see is half a
+                                feature: the question in front of someone
+                                scrolling a library is "have I seen this one",
+                                and a facet answers it only by hiding
+                                everything else.
+                            -->
+                            <Border Visibility="{x:Bind WatchedVisibility}"
+                                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                    CornerRadius="9" Padding="8,2"
+                                    HorizontalAlignment="Left">
+                                <TextBlock Text="watched" FontSize="11"
+                                           FontWeight="SemiBold"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Border>
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
             </Border>

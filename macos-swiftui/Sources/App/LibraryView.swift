@@ -211,12 +211,31 @@ private struct FilterMenu: View {
                 }
             }
 
+            /* No playlists is not a choice either, exactly like one channel.
+             * The menu appears the moment there is one to pick. */
+            if !model.userData.playlists.isEmpty {
+                Picker("Playlist", selection: playlistBinding) {
+                    Text("All videos").tag(String?.none)
+                    ForEach(model.userData.playlists) { pl in
+                        Text(pl.name).tag(String?.some(pl.id))
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+
             Section("Show only") {
                 ForEach(FacetFlags.all, id: \.rawValue) { flag in
                     Toggle(flag.label, isOn: flagBinding(flag))
                         .disabled(flag == .verifyFailed && model.verifyCache.knownCount == 0)
                 }
             }
+
+            /* The mirror image of the verification note, and honest for the
+             * opposite reason: this facet DOES see the whole archive -- a
+             * video nobody has marked is unwatched, which is the correct
+             * answer rather than an unknown one. What it has to say is how
+             * much is already marked. */
+            Text(watchedNote).font(.caption)
 
             /* The verification facet has to say what it is a subset of. It can
              * only see videos somebody has actually verified, and a facet that
@@ -245,6 +264,22 @@ private struct FilterMenu: View {
             return "Nothing has been verified yet. Use Verify on a video's page."
         }
         return "Of the \(known) video\(known == 1 ? "" : "s") verified so far."
+    }
+
+    private var watchedNote: String {
+        if model.userData.isReadOnly {
+            return "userdata.json could not be read; watch state is read-only "
+                + "this session."
+        }
+        let n = model.watchedCount
+        if n == 0 {
+            return "Nothing is marked watched yet, so this shows everything."
+        }
+        return "\(n) video\(n == 1 ? " is" : "s are") marked watched."
+    }
+
+    private var playlistBinding: Binding<String?> {
+        Binding(get: { model.playlistID }, set: { model.playlistID = $0 })
     }
 
     /* The sort is persisted and the facets are not, so they get different
@@ -367,6 +402,18 @@ private struct VideoCard: View {
             out.append((entry.refreshCount == 1
                         ? "refreshed"
                         : "refreshed ×\(entry.refreshCount)", .neutral))
+        }
+        /* Watch state. A "watched" flag you can only FILTER by and never see
+         * is half a feature: the question in front of someone scrolling a
+         * library is "have I seen this one", and a facet answers it only by
+         * hiding everything else.
+         *
+         * Read through the model rather than off a captured set, so
+         * userDataRevision is what redraws this -- a card holding its own
+         * copy would keep showing yesterday's answer. */
+        _ = model.userDataRevision
+        if model.isWatched(entry.key) {
+            out.append(("watched", .neutral))
         }
         return out
     }

@@ -37,6 +37,11 @@ public sealed class VideoCardModel
     public required string Subtitle { get; init; }
     public required string Duration { get; init; }
     public required string BadgeText { get; init; }
+    /* A SECOND pill rather than another entry in the priority chain below.
+     * Watch state is a different axis from what the folder contains, and
+     * letting "watched" displace "no media file" would hide the more
+     * important of the two. */
+    public required bool Watched { get; init; }
     public required string Directory { get; init; }
     public BitmapImage? Thumbnail { get; init; }
 
@@ -44,10 +49,15 @@ public sealed class VideoCardModel
         Duration.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     public Visibility BadgeVisibility =>
         BadgeText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility WatchedVisibility =>
+        Watched ? Visibility.Visible : Visibility.Collapsed;
     public Visibility PlaceholderVisibility =>
         Thumbnail is null ? Visibility.Visible : Visibility.Collapsed;
 
-    public static VideoCardModel From(ArchiveEntry e)
+    /* <paramref name="watched"/> is passed in rather than read from AppModel
+     * here, because this type is built on a hot path -- once per card per
+     * rebuild -- and the caller already has the store's set in hand. */
+    public static VideoCardModel From(ArchiveEntry e, bool watched)
     {
         var date = Format.UploadDate(e.UploadDate);
 
@@ -75,6 +85,7 @@ public sealed class VideoCardModel
             Subtitle = date.Length == 0 ? e.Uploader : $"{e.Uploader} · {date}",
             Duration = Format.Duration(e.Duration),
             BadgeText = badge,
+            Watched = watched,
             Directory = e.Dir,
             Thumbnail = ThumbnailCache.Load(e.ThumbnailPath),
         };
@@ -227,6 +238,49 @@ public sealed partial class LibraryPage : Page
             flyout.Items.Add(channels);
         }
 
+        /* No playlists is not a choice either, exactly like one channel. The
+         * submenu appears the moment there is one to pick. */
+        if (Model.UserData.Playlists.Count > 0)
+        {
+            var lists = new MenuFlyoutSubItem { Text = "Playlist" };
+
+            var all = new ToggleMenuFlyoutItem
+            {
+                Text = "All videos",
+                IsChecked = Model.PlaylistId is null,
+            };
+            all.Click += (_, _) =>
+            {
+                Model.PlaylistId = null;
+                RebuildFilterFlyout();
+                RefreshGrid();
+            };
+            lists.Items.Add(all);
+
+            foreach (var pl in Model.UserData.Playlists)
+            {
+                var capturedId = pl.Id;
+                var item = new ToggleMenuFlyoutItem
+                {
+                    Text = pl.Name,
+                    IsChecked = string.Equals(Model.PlaylistId, capturedId,
+                                              StringComparison.Ordinal),
+                };
+                item.Click += (_, _) =>
+                {
+                    /* Set rather than toggled: a playlist restriction is a
+                     * choice of ONE, and a second ticked item would be an
+                     * intersection of two playlists that the filter cannot
+                     * express and nobody asked for. */
+                    Model.PlaylistId = capturedId;
+                    RebuildFilterFlyout();
+                    RefreshGrid();
+                };
+                lists.Items.Add(item);
+            }
+            flyout.Items.Add(lists);
+        }
+
         foreach (var flag in Facets.All)
         {
             var captured = flag;
@@ -260,6 +314,23 @@ public sealed partial class LibraryPage : Page
             Text = known == 0
                 ? "Nothing verified yet — use Verify on a video's page"
                 : $"Of the {known} video{(known == 1 ? "" : "s")} verified so far",
+            IsEnabled = false,
+        });
+
+        /* The mirror image, and honest for the opposite reason: the Unwatched
+         * facet DOES see the whole archive -- a video nobody has marked is
+         * unwatched, which is the correct answer rather than an unknown one.
+         * What it has to say is how much is already marked, because on a fresh
+         * install "unwatched" means "all of them" and a facet that appears to
+         * do nothing reads as broken. */
+        var watched = Model.UserData.WatchedCount;
+        flyout.Items.Add(new MenuFlyoutItem
+        {
+            Text = Model.UserData.IsReadOnly
+                ? "userdata.json could not be read — watch state is read-only"
+                : watched == 0
+                    ? "Nothing is marked watched yet, so this shows everything"
+                    : $"{watched} video{(watched == 1 ? " is" : "s are")} marked watched",
             IsEnabled = false,
         });
 
@@ -330,8 +401,16 @@ public sealed partial class LibraryPage : Page
     {
         var entries = Model.FilteredEntries();
 
+        /* The store's live set, read once per rebuild rather than once per
+         * card: this is the hot path the whole card model exists to keep
+         * cheap. */
+        var watched = Model.UserData.WatchedKeys;
+
         _items.Clear();
-        foreach (var e in entries) _items.Add(VideoCardModel.From(e));
+        foreach (var e in entries)
+        {
+            _items.Add(VideoCardModel.From(e, watched.Contains(e.Key)));
+        }
 
         var empty = entries.Count == 0;
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;

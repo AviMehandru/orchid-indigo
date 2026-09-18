@@ -90,8 +90,16 @@ struct FacetFlags: OptionSet, Hashable {
     static let noMedia = FacetFlags(rawValue: 1 << 1)
     static let layoutTooNew = FacetFlags(rawValue: 1 << 2)
     static let verifyFailed = FacetFlags(rawValue: 1 << 3)
+    /// "Things I have not seen." The single most useful facet in an archive
+    /// anybody actually watches, and the only one whose answer comes from the
+    /// person rather than from the manifest.
+    static let unwatched = FacetFlags(rawValue: 1 << 4)
 
-    static let all: [FacetFlags] = [.audioOnly, .noMedia, .layoutTooNew, .verifyFailed]
+    /// Every flag, in the order they are offered. The UI iterates this rather
+    /// than listing them again, so a flag added above appears in the facet
+    /// list by construction.
+    static let all: [FacetFlags] = [.audioOnly, .noMedia, .layoutTooNew,
+                                    .verifyFailed, .unwatched]
 
     var label: String {
         switch self {
@@ -99,6 +107,7 @@ struct FacetFlags: OptionSet, Hashable {
         case .noMedia: return "No media file"
         case .layoutTooNew: return "Newer archive layout"
         case .verifyFailed: return "Failed verification"
+        case .unwatched: return "Unwatched"
         default: return ""
         }
     }
@@ -148,6 +157,25 @@ struct LibraryFilter: Equatable {
     /// control.
     var keyAllow: Set<String>?
 
+    /// The keys the user has marked watched, consulted only when
+    /// `.unwatched` is set. An empty set reads as "nothing is watched", which
+    /// is exactly right for a fresh install: every video is unwatched.
+    ///
+    /// A set rather than a closure, unlike the verification facet, because the
+    /// answer is already in memory -- the verify facet needs a closure because
+    /// its store has to compare a stamp per entry, and this one is a plain
+    /// membership test.
+    var watchedKeys: Set<String> = []
+
+    /// When non-nil, only videos in this set pass: a playlist's own keys,
+    /// resolved by the caller.
+    ///
+    /// Separate from `keyAllow` rather than folded into it, even though both
+    /// are "only these keys", because they are ANDed and a user can
+    /// legitimately search the comments of one playlist. Folding them would
+    /// silently make the second one replace the first.
+    var playlistKeys: Set<String>?
+
     var sort: SortKey = .date
     /// Newest first. The only default that is not a coin toss: an archive is
     /// added to at the newest end, so what someone wants to see when the
@@ -166,6 +194,11 @@ struct LibraryFilter: Equatable {
         dateTo = nil
         flags = []
         keyAllow = nil
+        /* playlistKeys is a filter and goes; watchedKeys is NOT -- it is the
+         * store's answer about the person, handed in once, and clearing it
+         * here would silently turn the "unwatched" facet into a facet that
+         * matches everything the next time it is ticked. */
+        playlistKeys = nil
     }
 
     /// How many facets are set, for the count beside the filter control. The
@@ -177,6 +210,7 @@ struct LibraryFilter: Equatable {
          * and counting it twice makes the count read as more narrowing than
          * it is. */
         if dateFrom != nil || dateTo != nil { n += 1 }
+        if playlistKeys != nil { n += 1 }
         for f in FacetFlags.all where flags.contains(f) { n += 1 }
         return n
     }
@@ -243,6 +277,10 @@ struct LibraryFilter: Equatable {
          * must show nothing, while a nil one means no search is running. */
         if let allow = keyAllow, !allow.contains(e.key) { return false }
 
+        /* The same asymmetry again, for the same reason: an EMPTY playlist
+         * shows nothing, a nil one means no playlist is selected. */
+        if let playlist = playlistKeys, !playlist.contains(e.key) { return false }
+
         if dateFrom != nil || dateTo != nil {
             guard LibraryFilter.isYYYYMMDD(e.uploadDate), let d = e.uploadDate else {
                 return false
@@ -263,6 +301,8 @@ struct LibraryFilter: Equatable {
             let state = verify?(e) ?? .unknown
             if state != .failed { return false }
         }
+
+        if flags.contains(.unwatched), watchedKeys.contains(e.key) { return false }
 
         return true
     }

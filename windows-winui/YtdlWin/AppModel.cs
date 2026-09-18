@@ -127,6 +127,13 @@ public sealed class AppModel
          * deliberately do not persist -- see Settings. */
         Filter.Sort = SortKeys.FromId(Settings.LibrarySort);
         Filter.Descending = Settings.LibrarySortDescending;
+
+        /* The watched set, handed over ONCE and live: it is the same HashSet
+         * the store mutates, so marking a video watched on its page is visible
+         * to the next filter pass without anything re-handing it. Unlike the
+         * facets this is not a filter the user set -- it is the store's
+         * answer, and the Unwatched facet is wrong without it. */
+        Filter.WatchedKeys = UserData.WatchedKeys;
     }
 
     public static AppModel Initialise(DispatcherQueue dispatcher)
@@ -282,6 +289,30 @@ public sealed class AppModel
     /// </remarks>
     public SearchIndex SearchIndex { get; } = new();
 
+    /// <summary>
+    /// Watch state, resume points and playlists: the one store here whose
+    /// contents came from the person rather than from the pipeline, which is
+    /// why it lives in the state directory rather than in the cache one.
+    /// </summary>
+    public UserData UserData { get; } = new();
+
+    /// <summary>
+    /// The playlist the Library is restricted to, by id, or null for all
+    /// videos. Kept beside the filter rather than in it, because the filter
+    /// wants a SET of keys and this is the user's choice of which playlist.
+    /// </summary>
+    public string? PlaylistId
+    {
+        get => _playlistId;
+        set
+        {
+            _playlistId = value;
+            Filter.PlaylistKeys = value is null ? null : UserData.PlaylistKeys(value);
+        }
+    }
+
+    private string? _playlistId;
+
     public SearchScope SearchScope { get; set; } = SearchScope.Metadata;
 
     /// The keys the current collection-wide search admits. null when the scope
@@ -422,8 +453,84 @@ public sealed class AppModel
     public void ClearFilters()
     {
         Filter.Reset();
+        /* Reset() drops the playlist RESTRICTION; this drops the user's
+         * selection with it. Leaving the id set would leave the flyout
+         * claiming a playlist while the grid showed the whole archive. */
+        PlaylistId = null;
         SearchText = "";
         SearchHits = null;
+        UpdateCounts();
+    }
+
+    // ------------------------------------------------------------------ //
+    // Watch state and playlists                                          //
+    // ------------------------------------------------------------------ //
+
+    public bool IsWatched(string key) => UserData.IsWatched(key);
+
+    public void SetWatched(string key, bool watched)
+    {
+        UserData.SetWatched(key, watched);
+        UserData.Save();
+        UpdateCounts();
+    }
+
+    /// <summary>
+    /// Record where playback got to. The three rules -- finished clears the
+    /// resume point, a glance stores nothing, anything else is kept -- are
+    /// UserData's, not this class's.
+    /// </summary>
+    /// <returns>
+    /// True when the WATCHED flag moved, so the caller knows whether anything
+    /// on screen needs redrawing. A resume point changes every five seconds
+    /// while something is playing, and redrawing the grid that often for a
+    /// number nothing is showing would be a waste.
+    /// </returns>
+    public bool RecordPosition(string key, double seconds, double duration)
+    {
+        var was = UserData.IsWatched(key);
+        UserData.SetPosition(key, seconds, duration);
+        UserData.Save();
+        if (UserData.IsWatched(key) == was) return false;
+        UpdateCounts();
+        return true;
+    }
+
+    public double ResumePosition(string key) => UserData.Position(key);
+
+    public Playlist? CreatePlaylist(string name, string? adding = null)
+    {
+        var pl = UserData.CreatePlaylist(name);
+        if (pl is null) return null;
+        if (adding is not null) UserData.AddToPlaylist(pl.Id, adding);
+        UserData.Save();
+        RefreshPlaylistFilter();
+        return pl;
+    }
+
+    public void TogglePlaylistMembership(string id, string key)
+    {
+        if (UserData.PlaylistContains(id, key)) UserData.RemoveFromPlaylist(id, key);
+        else UserData.AddToPlaylist(id, key);
+        UserData.Save();
+        RefreshPlaylistFilter();
+    }
+
+    public void DeletePlaylist(string id)
+    {
+        UserData.DeletePlaylist(id);
+        if (string.Equals(PlaylistId, id, StringComparison.Ordinal)) PlaylistId = null;
+        UserData.Save();
+        RefreshPlaylistFilter();
+    }
+
+    /* The playlist the Library is showing may be the very one that just
+     * changed, so its key set is rebuilt rather than assumed still right. The
+     * WATCHED set needs no such call: the filter holds the store's live
+     * HashSet, so a change is already visible to the next pass. */
+    private void RefreshPlaylistFilter()
+    {
+        if (PlaylistId is not null) Filter.PlaylistKeys = UserData.PlaylistKeys(PlaylistId);
         UpdateCounts();
     }
 

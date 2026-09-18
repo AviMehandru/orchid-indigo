@@ -136,6 +136,28 @@ final class AppModel: ObservableObject {
      * opening every video costs -- which is the exact rule the archive scan
      * already follows. The banner offers it when a scope needs it. */
     let searchIndex = SearchIndex()
+
+    /* Watch state, resume points and playlists: the one store here whose
+     * contents came from the person rather than from the pipeline, which is
+     * why it lives in the state directory rather than under ~/Library/Caches.
+     * Not @Published for the same reason verifyCache is not -- it is a
+     * reference type, and the two @Published mirrors below are what SwiftUI
+     * actually observes. */
+    let userData = UserData()
+
+    /// The playlist the Library is restricted to, by id, or nil for all
+    /// videos. Kept beside the filter rather than in it, because the filter
+    /// wants a SET of keys and this is the user's choice of which playlist.
+    @Published var playlistID: String? {
+        didSet { filter.playlistKeys = playlistID.flatMap { userData.playlistKeys($0) } }
+    }
+
+    /// Bumped whenever the store changes, so every view that shows watch state
+    /// -- the grid's badges, the facet's note, the playlist menu -- redraws.
+    /// A counter rather than the store itself: UserData is a class, and
+    /// publishing a reference that mutates in place announces nothing.
+    @Published var userDataRevision = 0
+
     @Published var searchScope: SearchScope = .metadata
     /// The keys the current collection-wide search admits. nil when the scope
     /// needs no index or the field is empty, which is NOT the same as empty:
@@ -188,6 +210,11 @@ final class AppModel: ObservableObject {
          * lost your videos. */
         filter.sort = SortKey.from(id: loaded.librarySort)
         filter.descending = loaded.librarySortDescending
+
+        /* The watched set, before the first scan for the same reason. Unlike
+         * the facets this is not a filter the user set -- it is the store's
+         * answer, and the "unwatched" facet is wrong without it. */
+        filter.watchedKeys = userData.watchedKeys
     }
 
     /// Remember an ordering the user chose. Called from the sort control, not
@@ -406,10 +433,86 @@ final class AppModel: ObservableObject {
     /// after "Clear filters" would leave a term visibly applied that is not.
     func clearFilters() {
         filter.reset()
+        /* reset() drops the playlist RESTRICTION; this drops the user's
+         * selection with it. Leaving the id set would leave the popover
+         * claiming a playlist while the grid showed the whole archive. */
+        playlistID = nil
         searchText = ""
         searchHits = nil
         updateCounts()
     }
+
+    // MARK: - Watch state and playlists
+
+    /// Hand the store's watched set to the filter and redraw.
+    ///
+    /// Called after every change rather than the set being handed over once,
+    /// because Swift's Set is a VALUE: unlike the GTK port's borrowed hash
+    /// table, a copy taken at startup would never see a later change. That is
+    /// the same difference that made `userDataRevision` necessary.
+    private func syncWatchState() {
+        filter.watchedKeys = userData.watchedKeys
+        if let id = playlistID {
+            filter.playlistKeys = userData.playlistKeys(id)
+        }
+        userDataRevision &+= 1
+        updateCounts()
+    }
+
+    func setWatched(_ key: String, _ watched: Bool) {
+        userData.setWatched(key, watched)
+        userData.save()
+        syncWatchState()
+    }
+
+    func isWatched(_ key: String) -> Bool { userData.isWatched(key) }
+
+    /// Record where playback got to. The three rules -- finished clears the
+    /// resume point, a glance stores nothing, anything else is kept -- are
+    /// UserData's, not this file's.
+    func recordPosition(_ key: String, seconds: Double, duration: Double) {
+        let wasWatched = userData.isWatched(key)
+        userData.setPosition(key, seconds: seconds, duration: duration)
+        userData.save()
+        /* Only redraw when the WATCHED flag moved. A resume point changes
+         * every five seconds while something is playing, and a published
+         * change that often would re-render the whole window for a number
+         * nothing on screen is showing. */
+        if userData.isWatched(key) != wasWatched { syncWatchState() }
+    }
+
+    func resumePosition(_ key: String) -> Double { userData.position(key) }
+
+    @discardableResult
+    func createPlaylist(named name: String, adding key: String? = nil) -> Playlist? {
+        guard let pl = userData.createPlaylist(named: name) else { return nil }
+        if let key { userData.addToPlaylist(pl.id, key: key) }
+        userData.save()
+        syncWatchState()
+        return pl
+    }
+
+    func togglePlaylistMembership(_ id: String, key: String) {
+        if userData.playlistContains(id, key: key) {
+            userData.removeFromPlaylist(id, key: key)
+        } else {
+            userData.addToPlaylist(id, key: key)
+        }
+        userData.save()
+        syncWatchState()
+    }
+
+    func deletePlaylist(_ id: String) {
+        userData.deletePlaylist(id)
+        if playlistID == id { playlistID = nil }
+        userData.save()
+        syncWatchState()
+    }
+
+    /// How many videos are marked watched, so the facet can say what it is a
+    /// subset of. On a fresh install "unwatched" means "all of them", and a
+    /// facet that appears to do nothing reads as broken.
+    var watchedCount: Int { userData.watchedCount }
 
     /// Record a verification result and redraw anything reading the facet.
     /// Called from the detail page and, later, from a bulk verify.

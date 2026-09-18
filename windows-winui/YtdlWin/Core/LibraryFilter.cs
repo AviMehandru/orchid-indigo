@@ -125,6 +125,11 @@ public enum FacetFlags
     NoMedia = 1 << 1,
     LayoutTooNew = 1 << 2,
     VerifyFailed = 1 << 3,
+
+    /* "Things I have not seen." The single most useful facet in an archive
+     * anybody actually watches, and the only one whose answer comes from the
+     * person rather than from the manifest. */
+    Unwatched = 1 << 4,
 }
 
 public static class Facets
@@ -133,6 +138,7 @@ public static class Facets
     {
         FacetFlags.AudioOnly, FacetFlags.NoMedia,
         FacetFlags.LayoutTooNew, FacetFlags.VerifyFailed,
+        FacetFlags.Unwatched,
     };
 
     public static string Label(FacetFlags flag) => flag switch
@@ -141,6 +147,7 @@ public static class Facets
         FacetFlags.NoMedia => "No media file",
         FacetFlags.LayoutTooNew => "Newer archive layout",
         FacetFlags.VerifyFailed => "Failed verification",
+        FacetFlags.Unwatched => "Unwatched",
         _ => "",
     };
 }
@@ -193,6 +200,30 @@ public sealed class LibraryFilter
     /// </remarks>
     public HashSet<string>? KeyAllow { get; set; }
 
+    /// <summary>
+    /// The keys the user has marked watched, consulted only when
+    /// <see cref="FacetFlags.Unwatched"/> is set. BORROWED from the store, and
+    /// live: it is the same set the store mutates, so marking a video watched
+    /// is visible to the next filter pass without anything re-handing it.
+    /// Null reads as "nothing is watched", which is exactly right for a fresh
+    /// install: every video is unwatched.
+    /// </summary>
+    /* A set rather than a callback, unlike the verification facet, because the
+     * answer is already in memory -- the verify facet needs a callback because
+     * its store has to compare a stamp per entry, and this one is a plain
+     * membership test. */
+    public HashSet<string>? WatchedKeys { get; set; }
+
+    /// <summary>
+    /// When non-null, only videos in this set pass: a playlist's own keys,
+    /// resolved by the caller.
+    /// </summary>
+    /* Separate from KeyAllow rather than folded into it, even though both are
+     * "only these keys", because they are ANDed and a user can legitimately
+     * search the comments of one playlist. Folding them would silently make
+     * the second one replace the first. */
+    public HashSet<string>? PlaylistKeys { get; set; }
+
     public SortKey Sort { get; set; } = SortKey.Date;
 
     /// Newest first. The only default that is not a coin toss: an archive is
@@ -217,6 +248,11 @@ public sealed class LibraryFilter
         DateTo = null;
         Flags = FacetFlags.None;
         KeyAllow = null;
+        /* PlaylistKeys is a filter and goes; WatchedKeys is NOT -- it is the
+         * store's answer about the person, handed in once, and clearing it
+         * here would silently turn the Unwatched facet into a facet that
+         * matches everything the next time it is ticked. */
+        PlaylistKeys = null;
     }
 
     /// <summary>
@@ -233,6 +269,7 @@ public sealed class LibraryFilter
              * had, and counting it twice makes the count read as more
              * narrowing than it is. */
             if (DateFrom is not null || DateTo is not null) n++;
+            if (PlaylistKeys is not null) n++;
             foreach (var f in Facets.All)
             {
                 if (Flags.HasFlag(f)) n++;
@@ -338,6 +375,11 @@ public sealed class LibraryFilter
          * lookup and it is the narrowest thing in the filter when set. */
         if (KeyAllow is not null && !KeyAllow.Contains(e.Key)) return false;
 
+        /* The same asymmetry as Channels above, and deliberate: an EMPTY
+         * PlaylistKeys means "this playlist has nothing in it" and must show
+         * nothing, while a null one means no playlist is selected. */
+        if (PlaylistKeys is not null && !PlaylistKeys.Contains(e.Key)) return false;
+
         if (DateFrom is not null || DateTo is not null)
         {
             if (!IsYyyyMmDd(e.UploadDate)) return false;
@@ -364,6 +406,9 @@ public sealed class LibraryFilter
             var state = verify?.Invoke(e) ?? VerifyState.Unknown;
             if (state != VerifyState.Failed) return false;
         }
+
+        if (Flags.HasFlag(FacetFlags.Unwatched) &&
+            WatchedKeys is not null && WatchedKeys.Contains(e.Key)) return false;
 
         return true;
     }
