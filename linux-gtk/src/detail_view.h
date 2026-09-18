@@ -18,6 +18,7 @@
 #include <gtk/gtk.h>
 
 #include "archive.h"
+#include "userdata.h"
 
 G_BEGIN_DECLS
 
@@ -37,6 +38,19 @@ void ytdl_detail_view_show (YtdlDetailView *self, const YtdlEntry *entry);
  * and audio continuing after you press Back is the kind of thing people
  * remember about an application. */
 void ytdl_detail_view_clear (YtdlDetailView *self);
+
+/* The watch-state store. BORROWED -- the application owns it, because the
+ * Library's "unwatched" facet reads the same one. NULL disables the watched
+ * toggle rather than hiding it, so the control does not appear and disappear
+ * depending on whether a file could be parsed. */
+void ytdl_detail_view_set_user_data (YtdlDetailView *self, YtdlUserData *ud);
+
+/* Signal: "watch-state-changed" (const char *key)
+ *
+ * Emitted when this page marks a video watched or unwatched, or stores a
+ * resume point. The Library has to hear about it: with the "unwatched" facet
+ * on, finishing a video means it should leave the grid, and a grid that only
+ * caught up on the next rescan would look broken. */
 
 G_END_DECLS
 

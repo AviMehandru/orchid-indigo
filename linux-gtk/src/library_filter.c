@@ -86,8 +86,14 @@ ytdl_library_filter_reset (YtdlLibraryFilter *filter)
   if (filter->channels->len > 0)
     g_ptr_array_remove_range (filter->channels, 0, filter->channels->len);
   filter->flags = YTDL_FACET_NONE;
-  /* Cleared, not freed: it is borrowed from whoever ran the search. */
+  /* Cleared, not freed: all three are borrowed from whoever built them --
+   * the search control, and the user-data store. */
   filter->key_allow = NULL;
+  filter->playlist_keys = NULL;
+  /* watched_keys is NOT cleared. It is not a filter: it is the set the
+   * UNWATCHED facet reads, and it stays valid whether or not that facet is
+   * on. Clearing it here would make "Clear filters" silently turn every
+   * video unwatched the next time the facet was ticked. */
   /* sort and descending survive on purpose -- see the header. */
 }
 
@@ -103,7 +109,9 @@ ytdl_library_filter_facet_count (const YtdlLibraryFilter *filter)
    * counting it twice makes the badge read as more narrowing than it is. */
   if (filter->date_from != NULL || filter->date_to != NULL)
     n++;
-  for (guint bit = 0; bit < 4; bit++)
+  if (filter->playlist_keys != NULL)
+    n++;
+  for (guint bit = 0; bit < YTDL_N_FACET_FLAGS; bit++)
     if (filter->flags & (1u << bit))
       n++;
   return n;
@@ -121,6 +129,26 @@ ytdl_library_filter_is_narrowing (const YtdlLibraryFilter *filter)
   if (filter->key_allow != NULL)
     return TRUE;
   return ytdl_library_filter_facet_count (filter) > 0;
+}
+
+const char *
+ytdl_facet_flag_label (YtdlFacetFlags flag)
+{
+  switch (flag)
+    {
+    case YTDL_FACET_AUDIO_ONLY:
+      return "Audio only";
+    case YTDL_FACET_NO_MEDIA:
+      return "No media file";
+    case YTDL_FACET_LAYOUT_TOO_NEW:
+      return "Newer archive layout";
+    case YTDL_FACET_VERIFY_FAILED:
+      return "Failed verification";
+    case YTDL_FACET_UNWATCHED:
+      return "Unwatched";
+    default:
+      return "";
+    }
 }
 
 gboolean
@@ -252,6 +280,17 @@ ytdl_library_filter_matches (const YtdlLibraryFilter *filter,
     return FALSE;
 
   if ((filter->flags & YTDL_FACET_LAYOUT_TOO_NEW) && !entry->layout_too_new)
+    return FALSE;
+
+  if ((filter->flags & YTDL_FACET_UNWATCHED) &&
+      filter->watched_keys != NULL &&
+      g_hash_table_contains (filter->watched_keys, entry->key))
+    return FALSE;
+
+  /* Like key_allow: an EMPTY set means "a playlist is selected and it is
+   * empty", which must show nothing, while NULL means no playlist filter. */
+  if (filter->playlist_keys != NULL &&
+      !g_hash_table_contains (filter->playlist_keys, entry->key))
     return FALSE;
 
   if (filter->flags & YTDL_FACET_VERIFY_FAILED)

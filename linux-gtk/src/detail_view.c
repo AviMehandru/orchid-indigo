@@ -74,6 +74,33 @@ struct _YtdlDetailView
   GtkWidget *files_box;
   GtkWidget *verify_result;
 
+  /* Watch state. The store is BORROWED -- the Library's "unwatched" facet
+   * reads the same one, and two copies would disagree the moment either was
+   * written. */
+  YtdlUserData *userdata;
+  GtkWidget    *watched_toggle;
+  GtkWidget    *resume_note;
+  /* Set while the toggle is being driven from the store rather than from a
+   * click, so the handler does not write back what it just read. */
+  gboolean      syncing_toggle;
+
+  /* The key and duration of the video on the page, kept because the position
+   * has to be recorded when the page is navigated AWAY from, at which point
+   * the entry that was passed to show() is long gone. */
+  char   *key;
+  double  media_duration;
+  /* Seconds to seek to once the stream reports itself prepared. A seek issued
+   * before that is silently dropped by GStreamer, which is why this is not
+   * simply done after gtk_video_set_file. */
+  double  pending_resume;
+  gulong  prepared_handler;
+  GtkMediaStream *watched_stream; /* borrowed; only for disconnecting */
+
+  /* Samples the player's timestamp. A timer rather than notify::timestamp,
+   * which fires on every frame -- writing a JSON file sixty times a second is
+   * not a resume feature, it is a disk benchmark. */
+  guint position_tick;
+
   char *media_path;
   char *folder;
 
@@ -83,6 +110,25 @@ struct _YtdlDetailView
 };
 
 G_DEFINE_FINAL_TYPE (YtdlDetailView, ytdl_detail_view, GTK_TYPE_BOX)
+
+enum
+{
+  SIG_WATCH_STATE_CHANGED,
+  N_SIGNALS
+};
+
+static guint detail_signals[N_SIGNALS];
+
+/* The watch-state helpers live down beside the rest of the actions, but
+ * render() -- which is above them -- has to arm the resume seek at the moment
+ * it hands the file to the player. */
+static void            sync_watched_toggle (YtdlDetailView *self);
+static void            show_resume_note    (YtdlDetailView *self, double s);
+static void            record_position     (YtdlDetailView *self);
+static void            drop_stream_handler (YtdlDetailView *self);
+static GtkMediaStream *current_stream      (YtdlDetailView *self);
+static void            on_stream_prepared  (GObject *stream, GParamSpec *pspec,
+                                            gpointer user_data);
 
 /* ---------------------------------------------------------------------- */
 /* Small helpers                                                          */
@@ -654,6 +700,36 @@ render (YtdlDetailView *self, DetailData *d)
       gtk_widget_set_visible (self->no_player_note, FALSE);
       g_autoptr (GFile) f = g_file_new_for_path (d->media_path);
       gtk_video_set_file (GTK_VIDEO (self->video), f);
+
+      /* The container's duration, not the manifest's: a folder whose media
+       * file was replaced by `ytdl --refresh` is the case where they can
+       * differ, and the one that decides "watched" has to be the file. */
+      if (d->probe != NULL && d->probe->ok && d->probe->duration > 0)
+        self->media_duration = d->probe->duration;
+
+      double resume = self->userdata != NULL && self->key != NULL
+                          ? ytdl_user_data_position (self->userdata, self->key)
+                          : 0;
+      show_resume_note (self, resume);
+
+      /* Arm the seek rather than performing it. GStreamer drops a seek issued
+       * against a stream that has not finished preparing, and the drop is
+       * silent -- the video simply starts at zero and nothing says why. */
+      drop_stream_handler (self);
+      GtkMediaStream *stream = current_stream (self);
+      if (stream != NULL && resume > 0)
+        {
+          self->pending_resume = resume;
+          if (gtk_media_stream_is_prepared (stream))
+            on_stream_prepared (G_OBJECT (stream), NULL, self);
+          else
+            {
+              self->watched_stream = stream;
+              self->prepared_handler = g_signal_connect (
+                  stream, "notify::prepared", G_CALLBACK (on_stream_prepared),
+                  self);
+            }
+        }
     }
   else
     {
@@ -758,6 +834,166 @@ on_verify (GtkButton *b, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Watch state                                                            */
+/* ---------------------------------------------------------------------- */
+
+static GtkMediaStream *
+current_stream (YtdlDetailView *self)
+{
+  if (self->video == NULL)
+    return NULL;
+  return gtk_video_get_media_stream (GTK_VIDEO (self->video));
+}
+
+/* Put the toggle where the store says, WITHOUT writing back. */
+static void
+sync_watched_toggle (YtdlDetailView *self)
+{
+  gboolean have = self->userdata != NULL && self->key != NULL;
+  gboolean watched =
+      have && ytdl_user_data_is_watched (self->userdata, self->key);
+
+  gtk_widget_set_sensitive (self->watched_toggle, have);
+
+  self->syncing_toggle = TRUE;
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->watched_toggle),
+                                watched);
+  self->syncing_toggle = FALSE;
+
+  /* The one state worth a sentence: a store that would not parse. Saying
+   * nothing here would let someone tick "watched" through a whole evening and
+   * find none of it kept. */
+  if (self->userdata != NULL && ytdl_user_data_is_read_only (self->userdata))
+    {
+      gtk_widget_set_sensitive (self->watched_toggle, FALSE);
+      gtk_widget_set_tooltip_text (
+          self->watched_toggle,
+          "userdata.json could not be read, so watch state is read-only this "
+          "session. The file has been left alone rather than replaced.");
+    }
+}
+
+static void
+show_resume_note (YtdlDetailView *self, double seconds)
+{
+  if (seconds <= 0)
+    {
+      gtk_widget_set_visible (self->resume_note, FALSE);
+      return;
+    }
+  g_autofree char *clock = format_clock (seconds);
+  g_autofree char *text = g_strdup_printf ("Resuming from %s", clock);
+  gtk_label_set_text (GTK_LABEL (self->resume_note), text);
+  gtk_widget_set_visible (self->resume_note, TRUE);
+}
+
+/* Sample the player and store where it got to.
+ *
+ * Called from the tick, and again when the page is left -- the tick alone
+ * would lose up to five seconds, and the last five seconds of a video are
+ * exactly the ones that decide whether it counts as watched. */
+static void
+record_position (YtdlDetailView *self)
+{
+  if (self->userdata == NULL || self->key == NULL)
+    return;
+  if (ytdl_user_data_is_read_only (self->userdata))
+    return;
+
+  GtkMediaStream *stream = current_stream (self);
+  if (stream == NULL || !gtk_media_stream_is_prepared (stream))
+    return;
+
+  double seconds = (double) gtk_media_stream_get_timestamp (stream)
+                   / (double) G_USEC_PER_SEC;
+  if (seconds <= 0)
+    return;
+
+  /* The stream's own duration beats the probe's when it has one: the probe
+   * read the container's header, and a header can be wrong about a file that
+   * was cut short. */
+  double duration = self->media_duration;
+  if (gtk_media_stream_get_duration (stream) > 0)
+    duration = (double) gtk_media_stream_get_duration (stream)
+               / (double) G_USEC_PER_SEC;
+
+  gboolean was_watched = ytdl_user_data_is_watched (self->userdata, self->key);
+  ytdl_user_data_set_position (self->userdata, self->key, seconds, duration);
+  ytdl_user_data_save (self->userdata);
+
+  if (ytdl_user_data_is_watched (self->userdata, self->key) != was_watched)
+    {
+      sync_watched_toggle (self);
+      g_signal_emit (self, detail_signals[SIG_WATCH_STATE_CHANGED], 0,
+                     self->key);
+    }
+}
+
+static gboolean
+on_position_tick (gpointer user_data)
+{
+  YtdlDetailView *self = user_data;
+  GtkMediaStream *stream = current_stream (self);
+  /* Only while it is actually moving. A paused player sampled every five
+   * seconds would rewrite the same number forever. */
+  if (stream != NULL && gtk_media_stream_get_playing (stream))
+    record_position (self);
+  return G_SOURCE_CONTINUE;
+}
+
+static void
+on_stream_prepared (GObject *stream, GParamSpec *pspec, gpointer user_data)
+{
+  YtdlDetailView *self = user_data;
+  if (!gtk_media_stream_is_prepared (GTK_MEDIA_STREAM (stream)))
+    return;
+
+  if (self->pending_resume > 0)
+    {
+      gtk_media_stream_seek (GTK_MEDIA_STREAM (stream),
+                             (gint64) (self->pending_resume
+                                       * (double) G_USEC_PER_SEC));
+      self->pending_resume = 0;
+    }
+}
+
+static void
+drop_stream_handler (YtdlDetailView *self)
+{
+  if (self->watched_stream != NULL && self->prepared_handler != 0)
+    g_signal_handler_disconnect (self->watched_stream, self->prepared_handler);
+  self->watched_stream = NULL;
+  self->prepared_handler = 0;
+}
+
+static void
+on_watched_toggled (GtkToggleButton *b, gpointer user_data)
+{
+  YtdlDetailView *self = user_data;
+  if (self->syncing_toggle || self->userdata == NULL || self->key == NULL)
+    return;
+
+  gboolean on = gtk_toggle_button_get_active (b);
+  ytdl_user_data_set_watched (self->userdata, self->key, on);
+  ytdl_user_data_save (self->userdata);
+  g_signal_emit (self, detail_signals[SIG_WATCH_STATE_CHANGED], 0, self->key);
+
+  /* Marking it watched clears the resume point (userdata.c does that), so the
+   * note has to go with it or it would offer to resume a video the user just
+   * said they had finished. */
+  if (on)
+    show_resume_note (self, 0);
+}
+
+void
+ytdl_detail_view_set_user_data (YtdlDetailView *self, YtdlUserData *ud)
+{
+  g_return_if_fail (YTDL_IS_DETAIL_VIEW (self));
+  self->userdata = ud;
+  sync_watched_toggle (self);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Public                                                                 */
 /* ---------------------------------------------------------------------- */
 
@@ -765,6 +1001,10 @@ void
 ytdl_detail_view_clear (YtdlDetailView *self)
 {
   g_return_if_fail (YTDL_IS_DETAIL_VIEW (self));
+  /* BEFORE the file is dropped: once the stream is gone there is no timestamp
+   * to read, and pressing Back is the commonest way a video stops. */
+  record_position (self);
+  drop_stream_handler (self);
   if (self->video != NULL)
     gtk_video_set_file (GTK_VIDEO (self->video), NULL);
   self->generation++;
@@ -776,8 +1016,21 @@ ytdl_detail_view_show (YtdlDetailView *self, const YtdlEntry *entry)
   g_return_if_fail (YTDL_IS_DETAIL_VIEW (self));
   g_return_if_fail (entry != NULL);
 
+  /* The page can be replaced without being cleared first -- a search result
+   * opened while another video is loaded. Bank the outgoing video's position
+   * before self->key becomes the new one. */
+  record_position (self);
+  drop_stream_handler (self);
+
   if (self->video != NULL)
     gtk_video_set_file (GTK_VIDEO (self->video), NULL);
+
+  g_free (self->key);
+  self->key = g_strdup (entry->key);
+  self->media_duration = entry->duration;
+  self->pending_resume = 0;
+  sync_watched_toggle (self);
+  show_resume_note (self, 0);
 
   DetailData *d = g_new0 (DetailData, 1);
   d->view = g_object_ref (self);
@@ -872,6 +1125,10 @@ static void
 ytdl_detail_view_dispose (GObject *object)
 {
   YtdlDetailView *self = YTDL_DETAIL_VIEW (object);
+  drop_stream_handler (self);
+  g_clear_handle_id (&self->position_tick, g_source_remove);
+  g_clear_pointer (&self->key, g_free);
+  self->userdata = NULL;
   g_clear_pointer (&self->media_path, g_free);
   g_clear_pointer (&self->folder, g_free);
   G_OBJECT_CLASS (ytdl_detail_view_parent_class)->dispose (object);
@@ -881,6 +1138,11 @@ static void
 ytdl_detail_view_class_init (YtdlDetailViewClass *klass)
 {
   G_OBJECT_CLASS (klass)->dispose = ytdl_detail_view_dispose;
+
+  detail_signals[SIG_WATCH_STATE_CHANGED] =
+      g_signal_new ("watch-state-changed", G_TYPE_FROM_CLASS (klass),
+                    G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
+                    G_TYPE_STRING);
 }
 
 static void
@@ -941,6 +1203,18 @@ ytdl_detail_view_init (YtdlDetailView *self)
     }
   gtk_widget_set_visible (self->video_holder, FALSE);
 
+  /* A line, not a dialogue. Asking "resume or start over?" before every video
+   * is a decision per playback for a choice that is almost always the same
+   * one; the player's own scrubber is already the way back to the start. */
+  self->resume_note = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (self->resume_note), 0.0f);
+  gtk_widget_set_margin_start (self->resume_note, 12);
+  gtk_widget_set_margin_end (self->resume_note, 12);
+  gtk_widget_add_css_class (self->resume_note, "caption");
+  gtk_widget_add_css_class (self->resume_note, "dim-label");
+  gtk_widget_set_visible (self->resume_note, FALSE);
+  gtk_box_append (GTK_BOX (self), self->resume_note);
+
   self->no_player_note = gtk_label_new (
       "No GStreamer media backend is installed, so the video cannot play in "
       "this window. The file itself is fine — open it in mpv.");
@@ -993,6 +1267,19 @@ ytdl_detail_view_init (YtdlDetailView *self)
   GtkWidget *folder = gtk_button_new_with_label ("Open folder");
   g_signal_connect (folder, "clicked", G_CALLBACK (on_open_folder), self);
   gtk_flow_box_append (GTK_FLOW_BOX (actions), folder);
+
+  /* A toggle rather than a button, because the state is the point: the
+   * control has to say whether this video is already marked, not just offer
+   * to mark it. It sits with the other per-video actions rather than in the
+   * header bar, since it is a fact about this video like the others. */
+  self->watched_toggle = gtk_toggle_button_new_with_label ("Watched");
+  gtk_widget_set_tooltip_text (
+      self->watched_toggle,
+      "Kept in userdata.json beside your settings — never inside the archive "
+      "folder, which checksums.sha256 covers.");
+  g_signal_connect (self->watched_toggle, "toggled",
+                    G_CALLBACK (on_watched_toggled), self);
+  gtk_flow_box_append (GTK_FLOW_BOX (actions), self->watched_toggle);
 
   GtkWidget *verify = gtk_button_new_with_label ("Verify checksums");
   gtk_widget_set_tooltip_text (
@@ -1119,6 +1406,13 @@ ytdl_detail_view_init (YtdlDetailView *self)
                                      narrow);
   gtk_box_append (GTK_BOX (lower), switcher_bin);
   gtk_box_append (GTK_BOX (lower), self->stack);
+
+  /* Five seconds. Short enough that a crash or a kill loses almost nothing,
+   * long enough that the store is not rewritten while anyone is watching the
+   * disk light. */
+  self->position_tick = g_timeout_add_seconds (5, on_position_tick, self);
+
+  sync_watched_toggle (self);
 }
 
 GtkWidget *

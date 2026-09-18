@@ -32,6 +32,7 @@
 #include "pipeline.h"
 #include "profiles.h"
 #include "search_index.h"
+#include "userdata.h"
 #include "settings.h"
 #include "style.h"
 #include "verify_cache.h"
@@ -74,7 +75,28 @@ typedef struct
   GtkWidget *flag_no_media;
   GtkWidget *flag_layout;
   GtkWidget *flag_verify;
+  GtkWidget *flag_unwatched;
   GtkWidget *verify_note;
+  GtkWidget *watched_note;
+
+  /* Watch state, resume points and playlists: the one store here whose
+   * contents came from the person rather than from the pipeline. Owned; the
+   * library filter borrows its watched set and the detail page borrows the
+   * whole thing. */
+  YtdlUserData *userdata;
+  GtkWidget    *playlist_frame;
+  GtkWidget    *playlist_drop;
+  GtkWidget    *playlist_menu;   /* on the detail page's header bar */
+  /* The selected playlist's keys, handed to the filter. Owned and rebuilt on
+   * every change rather than borrowed from the playlist, because the filter
+   * wants a set and a playlist is an ordered array. */
+  GHashTable   *playlist_keys;
+  /* Ids, parallel to the dropdown's rows; index 0 is the "All videos" row and
+   * is NULL. Owned. */
+  GPtrArray    *playlist_ids;
+  /* The key of the video the detail page is showing, so the playlist menu on
+   * its header bar knows what it is adding. */
+  char         *detail_key;
 
   /* Collection-wide comment and transcript search. */
   YtdlSearchIndex *search_index; /* owned */
@@ -109,6 +131,8 @@ static void populate_facets (App *app);
 static void apply_filter (App *app);
 static void run_search (App *app);
 static void update_search_banner (App *app);
+static void populate_playlists (App *app);
+static void rebuild_playlist_menu (App *app);
 
 /* A scan produces a whole new index; it is swapped in on the main thread so
  * the view is never looking at a half-built one. */
@@ -386,6 +410,15 @@ on_video_activated (GtkWidget *view, const char *key, gpointer user_data)
     return;
 
   ytdl_detail_view_show (YTDL_DETAIL_VIEW (app->detail), entry);
+
+  /* The playlist menu lives on the detail page's header bar rather than
+   * inside the detail view, because membership is the application's fact --
+   * the same store the Library filters on -- and threading it through the
+   * view would be a second owner of it. */
+  g_free (app->detail_key);
+  app->detail_key = g_strdup (entry->key);
+  rebuild_playlist_menu (app);
+
   adw_navigation_page_set_title (
       ADW_NAVIGATION_PAGE (app->detail_page),
       entry->title != NULL && *entry->title != '\0' ? entry->title : "Video");
@@ -588,6 +621,241 @@ on_flag_toggled (GtkCheckButton *check, gpointer user_data)
   apply_filter (app);
 }
 
+/* The detail page marked something watched, or a resume point crossed the
+ * threshold and marked it for itself.
+ *
+ * The Library has to hear about it while the user is still there: with the
+ * "unwatched" facet on, finishing a video means it should leave the grid, and
+ * a grid that only caught up on the next rescan would look broken. The filter
+ * already holds the store's live set, so there is nothing to re-hand -- only
+ * a refilter and the note that counts what is marked. */
+static void
+on_watch_state_changed (GtkWidget *detail, const char *key, gpointer user_data)
+{
+  App *app = user_data;
+  apply_filter (app);
+  populate_facets (app);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Playlists                                                              */
+/* ---------------------------------------------------------------------- */
+
+/* Turn the selected playlist into the set the filter wants.
+ *
+ * Rebuilt rather than held as a pointer into the playlist, because a playlist
+ * is an ordered GPtrArray and the filter does membership tests on every
+ * keystroke. Copying a few hundred string pointers once per selection change
+ * is the cheaper side of that trade by a wide margin. */
+static void
+apply_playlist_selection (App *app)
+{
+  YtdlLibraryFilter *f =
+      ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+
+  g_clear_pointer (&app->playlist_keys, g_hash_table_unref);
+  f->playlist_keys = NULL;
+
+  guint sel = gtk_drop_down_get_selected (GTK_DROP_DOWN (app->playlist_drop));
+  if (sel == GTK_INVALID_LIST_POSITION || sel == 0
+      || app->playlist_ids == NULL || sel >= app->playlist_ids->len)
+    return;
+
+  const char *id = g_ptr_array_index (app->playlist_ids, sel);
+  YtdlPlaylist *pl = ytdl_user_data_playlist (app->userdata, id);
+  if (pl == NULL)
+    return;
+
+  /* An EMPTY playlist still produces an empty set rather than NULL. "This
+   * playlist has nothing in it" must show nothing, not everything -- NULL
+   * here means "no playlist filter", and the two are opposite answers. */
+  app->playlist_keys = g_hash_table_new (g_str_hash, g_str_equal);
+  for (guint i = 0; i < pl->keys->len; i++)
+    g_hash_table_add (app->playlist_keys, g_ptr_array_index (pl->keys, i));
+
+  f->playlist_keys = app->playlist_keys;
+}
+
+static void
+on_playlist_changed (GObject *drop, GParamSpec *pspec, gpointer user_data)
+{
+  App *app = user_data;
+  if (app->populating)
+    return;
+  apply_playlist_selection (app);
+  apply_filter (app);
+}
+
+/* The dropdown, from the store. Index 0 is always "All videos". */
+static void
+populate_playlists (App *app)
+{
+  if (app->playlist_drop == NULL)
+    return;
+
+  gboolean was_populating = app->populating;
+  app->populating = TRUE;
+
+  /* Remember the selection by ID, not by row: creating or deleting a
+   * playlist renumbers the rows, and restoring a row index would silently
+   * move the user to a different playlist. */
+  g_autofree char *selected = NULL;
+  guint prev = gtk_drop_down_get_selected (GTK_DROP_DOWN (app->playlist_drop));
+  if (app->playlist_ids != NULL && prev != GTK_INVALID_LIST_POSITION
+      && prev > 0 && prev < app->playlist_ids->len)
+    selected = g_strdup (g_ptr_array_index (app->playlist_ids, prev));
+
+  GPtrArray *playlists = ytdl_user_data_playlists (app->userdata);
+
+  g_clear_pointer (&app->playlist_ids, g_ptr_array_unref);
+  app->playlist_ids = g_ptr_array_new_with_free_func (g_free);
+  g_ptr_array_add (app->playlist_ids, NULL); /* the "All videos" row */
+
+  GtkStringList *names = gtk_string_list_new (NULL);
+  gtk_string_list_append (names, "All videos");
+
+  guint restore = 0;
+  for (guint i = 0; i < playlists->len; i++)
+    {
+      const YtdlPlaylist *pl = g_ptr_array_index (playlists, i);
+      gtk_string_list_append (names, pl->name);
+      g_ptr_array_add (app->playlist_ids, g_strdup (pl->id));
+      if (selected != NULL && g_strcmp0 (selected, pl->id) == 0)
+        restore = i + 1;
+    }
+
+  gtk_drop_down_set_model (GTK_DROP_DOWN (app->playlist_drop),
+                           G_LIST_MODEL (names));
+  g_object_unref (names);
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (app->playlist_drop), restore);
+
+  /* No playlists is not a choice, exactly like one channel. The section
+   * appears the moment there is one to pick. */
+  gtk_widget_set_visible (app->playlist_frame, playlists->len > 0);
+
+  app->populating = was_populating;
+  apply_playlist_selection (app);
+}
+
+static void
+on_playlist_toggle_membership (GSimpleAction *action, GVariant *param,
+                               gpointer user_data)
+{
+  App *app = user_data;
+  const char *id = g_variant_get_string (param, NULL);
+  if (app->detail_key == NULL || app->userdata == NULL)
+    return;
+
+  if (ytdl_user_data_playlist_contains (app->userdata, id, app->detail_key))
+    ytdl_user_data_playlist_remove (app->userdata, id, app->detail_key);
+  else
+    ytdl_user_data_playlist_add (app->userdata, id, app->detail_key);
+
+  ytdl_user_data_save (app->userdata);
+  rebuild_playlist_menu (app);
+  /* The Library may be filtered to the very playlist just changed. */
+  apply_playlist_selection (app);
+  apply_filter (app);
+}
+
+static void
+on_new_playlist_response (AdwAlertDialog *dialog, const char *response,
+                          gpointer user_data)
+{
+  App *app = user_data;
+  if (g_strcmp0 (response, "create") != 0)
+    return;
+
+  GtkWidget *entry = g_object_get_data (G_OBJECT (dialog), "entry");
+  const char *name = gtk_editable_get_text (GTK_EDITABLE (entry));
+
+  YtdlPlaylist *pl = ytdl_user_data_playlist_create (app->userdata, name);
+  if (pl == NULL)
+    return; /* blank name; userdata.c refuses it and so does this */
+
+  if (app->detail_key != NULL)
+    ytdl_user_data_playlist_add (app->userdata, pl->id, app->detail_key);
+
+  ytdl_user_data_save (app->userdata);
+  populate_playlists (app);
+  rebuild_playlist_menu (app);
+  apply_filter (app);
+}
+
+static void
+on_new_playlist (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  App *app = user_data;
+
+  AdwAlertDialog *dialog = ADW_ALERT_DIALOG (
+      adw_alert_dialog_new ("New playlist", NULL));
+  adw_alert_dialog_add_responses (dialog, "cancel", "Cancel", "create",
+                                  "Create", NULL);
+  adw_alert_dialog_set_response_appearance (dialog, "create",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (dialog, "create");
+  adw_alert_dialog_set_close_response (dialog, "cancel");
+
+  GtkWidget *entry = gtk_entry_new ();
+  gtk_entry_set_placeholder_text (GTK_ENTRY (entry), "Name");
+  gtk_entry_set_activates_default (GTK_ENTRY (entry), TRUE);
+  adw_alert_dialog_set_extra_child (dialog, entry);
+  g_object_set_data (G_OBJECT (dialog), "entry", entry);
+
+  g_signal_connect (dialog, "response",
+                    G_CALLBACK (on_new_playlist_response), app);
+  adw_dialog_present (ADW_DIALOG (dialog), app->window);
+}
+
+/* The menu on the detail page's header bar: one check item per playlist plus
+ * "New playlist…".
+ *
+ * Rebuilt rather than kept, because the item for each playlist has to show
+ * whether THIS video is in it, and that changes on every page. */
+static void
+rebuild_playlist_menu (App *app)
+{
+  if (app->playlist_menu == NULL)
+    return;
+
+  gboolean usable = app->userdata != NULL && app->detail_key != NULL
+                    && !ytdl_user_data_is_read_only (app->userdata);
+  gtk_widget_set_sensitive (app->playlist_menu, usable);
+
+  GMenu *menu = g_menu_new ();
+  GPtrArray *playlists = ytdl_user_data_playlists (app->userdata);
+
+  GMenu *section = g_menu_new ();
+  for (guint i = 0; i < playlists->len; i++)
+    {
+      const YtdlPlaylist *pl = g_ptr_array_index (playlists, i);
+      gboolean in = app->detail_key != NULL
+                    && ytdl_user_data_playlist_contains (app->userdata, pl->id,
+                                                         app->detail_key);
+      /* A tick in the label rather than a stateful action: the state of a
+       * GAction is per-action, and these items all share one action with the
+       * playlist id as its target. Making each one stateful would mean an
+       * action per playlist, created and destroyed as playlists come and go. */
+      g_autofree char *label =
+          g_strdup_printf ("%s%s", in ? "✓ " : "", pl->name);
+      g_autoptr (GMenuItem) item = g_menu_item_new (label, NULL);
+      g_menu_item_set_action_and_target_value (
+          item, "win.playlist-toggle", g_variant_new_string (pl->id));
+      g_menu_append_item (section, item);
+    }
+  if (playlists->len > 0)
+    g_menu_append_section (menu, NULL, G_MENU_MODEL (section));
+  g_object_unref (section);
+
+  g_menu_append (menu, "New playlist…", "win.playlist-new");
+
+  gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (app->playlist_menu),
+                                  G_MENU_MODEL (menu));
+  g_object_unref (menu);
+}
+
+/* ---------------------------------------------------------------------- */
+
 static void
 on_clear_filters (GtkButton *button, gpointer user_data)
 {
@@ -600,6 +868,14 @@ on_clear_filters (GtkButton *button, gpointer user_data)
    * term that is no longer being applied. */
   ytdl_library_filter_reset (f);
   gtk_editable_set_text (GTK_EDITABLE (app->search), "");
+
+  /* reset() drops the playlist restriction, so the dropdown has to follow it
+   * back to "All videos" or the popover would claim a playlist is still
+   * selected while the grid showed the whole archive. */
+  app->populating = TRUE;
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (app->playlist_drop), 0);
+  app->populating = FALSE;
+  g_clear_pointer (&app->playlist_keys, g_hash_table_unref);
 
   populate_facets (app);
   /* run_search rather than apply_filter: clearing the box has to drop the
@@ -640,6 +916,8 @@ populate_facets (App *app)
                                (f->flags & YTDL_FACET_LAYOUT_TOO_NEW) != 0);
   gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_verify),
                                (f->flags & YTDL_FACET_VERIFY_FAILED) != 0);
+  gtk_check_button_set_active (GTK_CHECK_BUTTON (app->flag_unwatched),
+                               (f->flags & YTDL_FACET_UNWATCHED) != 0);
 
   /* The verification facet has to say what it is a subset of. It can only
    * see videos somebody has actually verified, and a facet that silently
@@ -659,6 +937,31 @@ populate_facets (App *app)
           "Of the %u video%s verified so far.", known, known == 1 ? "" : "s");
       gtk_label_set_text (GTK_LABEL (app->verify_note), note);
       gtk_widget_set_sensitive (app->flag_verify, TRUE);
+    }
+
+  /* The unwatched facet's note is the mirror image of the verification one,
+   * and honest for the opposite reason: this facet DOES see the whole
+   * archive -- a video nobody has marked is unwatched, which is the correct
+   * answer rather than an unknown one. What it has to say is how much is
+   * already marked, because "unwatched" on a fresh install means "all of
+   * them" and a facet that appears to do nothing reads as broken. */
+  guint watched = app->userdata != NULL
+                      ? ytdl_user_data_watched_count (app->userdata)
+                      : 0;
+  if (app->userdata != NULL && ytdl_user_data_is_read_only (app->userdata))
+    gtk_label_set_text (
+        GTK_LABEL (app->watched_note),
+        "userdata.json could not be read; watch state is read-only this "
+        "session.");
+  else if (watched == 0)
+    gtk_label_set_text (GTK_LABEL (app->watched_note),
+                        "Nothing is marked watched yet, so this shows "
+                        "everything.");
+  else
+    {
+      g_autofree char *note = g_strdup_printf (
+          "%u video%s marked watched.", watched, watched == 1 ? " is" : "s are");
+      gtk_label_set_text (GTK_LABEL (app->watched_note), note);
     }
 
   GtkWidget *child;
@@ -985,6 +1288,28 @@ build_filter_popover (App *app)
   gtk_box_append (GTK_BOX (app->channel_frame), channel_scroll);
   gtk_box_append (GTK_BOX (box), app->channel_frame);
 
+  /* --- Playlists -------------------------------------------------- */
+  app->playlist_frame = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_box_append (GTK_BOX (app->playlist_frame), facet_heading ("Playlist"));
+
+  app->playlist_drop = gtk_drop_down_new (NULL, NULL);
+  gtk_widget_set_hexpand (app->playlist_drop, TRUE);
+  g_signal_connect (app->playlist_drop, "notify::selected",
+                    G_CALLBACK (on_playlist_changed), app);
+  gtk_box_append (GTK_BOX (app->playlist_frame), app->playlist_drop);
+
+  GtkWidget *playlist_hint =
+      gtk_label_new ("Add videos to a playlist from a video's page.");
+  gtk_label_set_xalign (GTK_LABEL (playlist_hint), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (playlist_hint), TRUE);
+  gtk_widget_add_css_class (playlist_hint, "dim-label");
+  gtk_widget_add_css_class (playlist_hint, "caption");
+  gtk_box_append (GTK_BOX (app->playlist_frame), playlist_hint);
+
+  /* Hidden until there is one; populate_playlists decides. */
+  gtk_widget_set_visible (app->playlist_frame, FALSE);
+  gtk_box_append (GTK_BOX (box), app->playlist_frame);
+
   /* --- Dates ------------------------------------------------------ */
   gtk_box_append (GTK_BOX (box), facet_heading ("Uploaded between"));
 
@@ -1022,10 +1347,23 @@ build_filter_popover (App *app)
       flag_check (app, "Newer archive layout", YTDL_FACET_LAYOUT_TOO_NEW);
   app->flag_verify =
       flag_check (app, "Failed verification", YTDL_FACET_VERIFY_FAILED);
+  app->flag_unwatched =
+      flag_check (app, ytdl_facet_flag_label (YTDL_FACET_UNWATCHED),
+                  YTDL_FACET_UNWATCHED);
 
   gtk_box_append (GTK_BOX (box), app->flag_audio);
   gtk_box_append (GTK_BOX (box), app->flag_no_media);
   gtk_box_append (GTK_BOX (box), app->flag_layout);
+  gtk_box_append (GTK_BOX (box), app->flag_unwatched);
+
+  app->watched_note = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (app->watched_note), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (app->watched_note), TRUE);
+  gtk_widget_add_css_class (app->watched_note, "dim-label");
+  gtk_widget_add_css_class (app->watched_note, "caption");
+  gtk_widget_set_margin_start (app->watched_note, 28);
+  gtk_box_append (GTK_BOX (box), app->watched_note);
+
   gtk_box_append (GTK_BOX (box), app->flag_verify);
 
   app->verify_note = gtk_label_new (NULL);
@@ -1142,6 +1480,15 @@ build_main_page (App *app)
   }
   ytdl_library_view_set_verify_cache (YTDL_LIBRARY_VIEW (app->library),
                                       app->verify);
+
+  /* The watched set is handed over ONCE and is live: the store mutates the
+   * same table, so marking a video watched on its page is visible to the
+   * next refilter without anything having to re-hand it. */
+  {
+    YtdlLibraryFilter *f =
+        ytdl_library_view_get_filter (YTDL_LIBRARY_VIEW (app->library));
+    f->watched_keys = ytdl_user_data_watched_keys (app->userdata);
+  }
   adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
                                        app->library, "library", "Library",
                                        "view-grid-symbolic");
@@ -1251,9 +1598,20 @@ build_detail_page (App *app)
 {
   app->detail = ytdl_detail_view_new ();
 
+  GtkWidget *header = adw_header_bar_new ();
+
+  /* view-list-symbolic, not a playlist icon: adwaita-icon-theme 46 -- what
+   * Ubuntu 24.04 ships, this app's floor -- has no playlist glyph, and a name
+   * it does not have draws the broken-image square rather than failing at
+   * build time. Every icon name in this app has been seen to DRAW. */
+  app->playlist_menu = gtk_menu_button_new ();
+  gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (app->playlist_menu),
+                                 "view-list-symbolic");
+  gtk_widget_set_tooltip_text (app->playlist_menu, "Playlists");
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->playlist_menu);
+
   GtkWidget *toolbar = adw_toolbar_view_new ();
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar),
-                                adw_header_bar_new ());
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), header);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), app->detail);
 
   AdwNavigationPage *page = adw_navigation_page_new (toolbar, "Video");
@@ -1313,10 +1671,31 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
   adw_application_window_add_breakpoint (
       ADW_APPLICATION_WINDOW (app->window), bp);
 
+  /* The playlist menu's two actions. On the WINDOW rather than the
+   * application, because both of them act on the video the detail page is
+   * currently showing -- a per-window fact. */
+  {
+    static const GActionEntry playlist_actions[] = {
+      { "playlist-toggle", on_playlist_toggle_membership, "s", NULL, NULL,
+        { 0 } },
+      { "playlist-new", on_new_playlist, NULL, NULL, NULL, { 0 } },
+    };
+    g_action_map_add_action_entries (G_ACTION_MAP (app->window),
+                                     playlist_actions,
+                                     G_N_ELEMENTS (playlist_actions), app);
+  }
+
+  ytdl_detail_view_set_user_data (YTDL_DETAIL_VIEW (app->detail),
+                                  app->userdata);
+  g_signal_connect (app->detail, "watch-state-changed",
+                    G_CALLBACK (on_watch_state_changed), app);
+
   on_page_changed (G_OBJECT (app->stack), NULL, app);
   /* Before the first scan, so the popover is never briefly a set of empty
    * controls with a channel list that has not been built yet. */
   populate_facets (app);
+  populate_playlists (app);
+  rebuild_playlist_menu (app);
   gtk_window_present (GTK_WINDOW (app->window));
 
   /* The worker starts only once the window it will emit into is real, which
@@ -1375,6 +1754,10 @@ main (int argc, char **argv)
    * -- which is the exact rule the index scan already follows. The banner
    * offers it when a scope needs it. */
   app.search_index = ytdl_search_index_load ();
+  /* USER DATA, not a cache, and loaded from the state directory for that
+   * reason. Never fails: a file that will not parse yields an empty store
+   * that refuses to save over it, which the UI says out loud. */
+  app.userdata = ytdl_user_data_load ();
 
   /* --archive-root, then the root chosen on the Health pane, then the usual
    * locations. The middle one used to be missing: settings.json carried an
@@ -1421,6 +1804,14 @@ main (int argc, char **argv)
   ytdl_search_index_save (app.search_index);
   g_clear_pointer (&app.search_index, ytdl_search_index_free);
   g_clear_pointer (&app.search_hits, g_hash_table_unref);
+  /* Saved here as well as at every change: the tick that records a resume
+   * point is five seconds wide, and closing the window is exactly the moment
+   * someone expects the last few seconds to have been kept. */
+  ytdl_user_data_save (app.userdata);
+  g_clear_pointer (&app.userdata, ytdl_user_data_free);
+  g_clear_pointer (&app.playlist_keys, g_hash_table_unref);
+  g_clear_pointer (&app.playlist_ids, g_ptr_array_unref);
+  g_clear_pointer (&app.detail_key, g_free);
   g_clear_pointer (&app.settings, ytdl_settings_free);
   g_clear_pointer (&app.index, ytdl_index_free);
   g_free (app.archive_root);

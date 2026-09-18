@@ -531,6 +531,12 @@ void ytdl_register_library_tests (void);
  * make the same query return different videos with nothing saying why. */
 void ytdl_register_search_tests (void);
 
+/* Defined in test_userdata.c -- watch state, resume points and playlists. The
+ * one store in this app whose contents came from the PERSON rather than from
+ * the pipeline, which is why its tests dwell on what happens to a file that
+ * cannot be parsed. */
+void ytdl_register_userdata_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -567,6 +573,7 @@ main (int argc, char **argv)
   ytdl_register_url_probe_tests ();
   ytdl_register_library_tests ();
   ytdl_register_search_tests ();
+  ytdl_register_userdata_tests ();
 
   return g_test_run ();
 }

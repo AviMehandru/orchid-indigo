@@ -83,8 +83,16 @@ typedef enum
   YTDL_FACET_AUDIO_ONLY      = 1 << 0,
   YTDL_FACET_NO_MEDIA        = 1 << 1,
   YTDL_FACET_LAYOUT_TOO_NEW  = 1 << 2,
-  YTDL_FACET_VERIFY_FAILED   = 1 << 3
+  YTDL_FACET_VERIFY_FAILED   = 1 << 3,
+  /* "Things I have not seen." The single most useful facet in an archive
+   * anybody actually watches, and the only one whose answer comes from the
+   * person rather than from the manifest. */
+  YTDL_FACET_UNWATCHED       = 1 << 4
 } YtdlFacetFlags;
+
+/* How many flag facets there are. The UI iterates this rather than listing
+ * them again, so a flag added above appears in the popover by construction. */
+#define YTDL_N_FACET_FLAGS 5
 
 /* What is known about a video's last checksum verification. */
 typedef enum
@@ -135,6 +143,25 @@ typedef struct
    * combined needle, for a choice that belongs to the search control. */
   GHashTable *key_allow;
 
+  /* The keys the user has marked watched. BORROWED, and consulted only when
+   * YTDL_FACET_UNWATCHED is set. NULL reads as "nothing is watched", which is
+   * exactly right for a fresh install: every video is unwatched.
+   *
+   * A set rather than a callback, unlike the verification facet, because the
+   * answer is already a hash table in memory -- the verify facet needs a
+   * callback because its store has to compare a stamp per entry, and this one
+   * is a plain membership test. */
+  GHashTable *watched_keys;
+
+  /* When non-NULL, only videos in this set pass: a playlist's own keys,
+   * resolved by the caller. Borrowed.
+   *
+   * Separate from key_allow rather than folded into it, even though both are
+   * "only these keys", because they are ANDed and a user can legitimately
+   * search the comments of one playlist. Folding them would silently make the
+   * second one replace the first. */
+  GHashTable *playlist_keys;
+
   YtdlSortKey sort;
   gboolean    descending;
 } YtdlLibraryFilter;
@@ -156,6 +183,11 @@ gboolean ytdl_library_filter_is_narrowing (const YtdlLibraryFilter *filter);
 /* How many facets are set, for the badge on the filter button. The needle is
  * not counted -- it has its own visible search bar. */
 guint ytdl_library_filter_facet_count (const YtdlLibraryFilter *filter);
+
+/* The label a flag facet is offered under. Lives here rather than in the UI
+ * so that adding a flag to the enum and forgetting to name it is a blank
+ * string in one place instead of a missing checkbox nobody notices. */
+const char *ytdl_facet_flag_label (YtdlFacetFlags flag);
 
 void     ytdl_library_filter_set_channel (YtdlLibraryFilter *filter,
                                           const char *channel, gboolean on);
