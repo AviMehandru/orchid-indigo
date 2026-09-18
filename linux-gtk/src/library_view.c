@@ -60,6 +60,14 @@ struct _YtdlLibraryView
   GtkWidget  *stack;
   GListStore *store;
 
+  /* Two selection models over ONE store, swapped by the mode toggle rather
+   * than rebuilt. Rebuilding would mean re-binding every visible card at the
+   * moment the user pressed a button that is supposed to do nothing but
+   * change what a click means. */
+  GtkSelectionModel *single;
+  GtkSelectionModel *multi;
+  gboolean           selecting;
+
   YtdlIndex *index; /* borrowed */
 
   /* Owned. Every narrowing and ordering decision lives here rather than in
@@ -79,10 +87,15 @@ G_DEFINE_FINAL_TYPE (YtdlLibraryView, ytdl_library_view, GTK_TYPE_BOX)
 enum
 {
   SIG_VIDEO_ACTIVATED,
+  SIG_SELECTION_CHANGED,
   N_SIGNALS
 };
 
 static guint signals[N_SIGNALS];
+
+/* Defined down beside the rest of the selection code; rebuild() is above it
+ * and has to announce that emptying the store dropped the selection. */
+static void emit_selection_changed (YtdlLibraryView *self);
 
 #define THUMB_W 240
 #define THUMB_H 135
@@ -392,6 +405,13 @@ rebuild (YtdlLibraryView *self)
       GTK_SCROLLED_WINDOW (self->scroller));
   if (adj != NULL)
     gtk_adjustment_set_value (adj, 0.0);
+
+  /* Emptying the store dropped whatever was selected, so anything showing a
+   * count has to hear about it. Changing the filter clearing the selection is
+   * correct rather than unfortunate: the selection was of videos, and half of
+   * them may no longer be on screen to be acted on. */
+  if (self->selecting)
+    emit_selection_changed (self);
 }
 
 void
@@ -454,6 +474,8 @@ ytdl_library_view_dispose (GObject *object)
   g_clear_pointer (&self->filter, ytdl_library_filter_free);
   g_clear_pointer (&self->thumbs, g_hash_table_destroy);
   self->verify = NULL;
+  g_clear_object (&self->single);
+  g_clear_object (&self->multi);
   g_clear_object (&self->store);
   self->index = NULL;
   G_OBJECT_CLASS (ytdl_library_view_parent_class)->dispose (object);
@@ -468,6 +490,97 @@ ytdl_library_view_class_init (YtdlLibraryViewClass *klass)
       g_signal_new ("video-activated", G_TYPE_FROM_CLASS (klass),
                     G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 1,
                     G_TYPE_STRING);
+
+  signals[SIG_SELECTION_CHANGED] =
+      g_signal_new ("selection-changed", G_TYPE_FROM_CLASS (klass),
+                    G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+}
+
+static void
+emit_selection_changed (YtdlLibraryView *self)
+{
+  g_signal_emit (self, signals[SIG_SELECTION_CHANGED], 0);
+}
+
+void
+ytdl_library_view_set_selection_mode (YtdlLibraryView *self, gboolean on)
+{
+  g_return_if_fail (YTDL_IS_LIBRARY_VIEW (self));
+  if (self->selecting == on)
+    return;
+
+  self->selecting = on;
+
+  if (on)
+    {
+      /* Single-click SELECTS in selection mode. Requiring a double-click to
+       * tick a box would be the one gesture nobody tries. */
+      gtk_grid_view_set_single_click_activate (GTK_GRID_VIEW (self->grid), FALSE);
+      gtk_grid_view_set_model (GTK_GRID_VIEW (self->grid), self->multi);
+    }
+  else
+    {
+      /* Everything is deselected on the way out, so a selection cannot
+       * survive into a mode that shows none of it. */
+      gtk_selection_model_unselect_all (self->multi);
+      gtk_grid_view_set_model (GTK_GRID_VIEW (self->grid), self->single);
+    }
+
+  emit_selection_changed (self);
+}
+
+gboolean
+ytdl_library_view_get_selection_mode (YtdlLibraryView *self)
+{
+  g_return_val_if_fail (YTDL_IS_LIBRARY_VIEW (self), FALSE);
+  return self->selecting;
+}
+
+GPtrArray *
+ytdl_library_view_selected_keys (YtdlLibraryView *self)
+{
+  /* NOT a free func: the strings belong to the index, and this array is a
+   * list of borrowed pointers into it. */
+  GPtrArray *keys = g_ptr_array_new ();
+  g_return_val_if_fail (YTDL_IS_LIBRARY_VIEW (self), keys);
+
+  if (!self->selecting)
+    return keys;
+
+  g_autoptr (GtkBitset) set = gtk_selection_model_get_selection (self->multi);
+  GtkBitsetIter iter;
+  guint position;
+
+  if (!gtk_bitset_iter_init_first (&iter, set, &position))
+    return keys;
+
+  do
+    {
+      g_autoptr (YtdlVideoObject) obj =
+          g_list_model_get_item (G_LIST_MODEL (self->store), position);
+      if (obj != NULL && obj->entry != NULL)
+        g_ptr_array_add (keys, obj->entry->key);
+    }
+  while (gtk_bitset_iter_next (&iter, &position));
+
+  return keys;
+}
+
+void
+ytdl_library_view_select_all (YtdlLibraryView *self, gboolean all)
+{
+  g_return_if_fail (YTDL_IS_LIBRARY_VIEW (self));
+  if (!self->selecting)
+    return;
+
+  /* The multi selection is over the STORE, and the store holds exactly what
+   * the filter is showing. So "all" here means what is on screen, which is
+   * the only reading that cannot mark four thousand videos watched by
+   * accident from inside a filtered view. */
+  if (all)
+    gtk_selection_model_select_all (self->multi);
+  else
+    gtk_selection_model_unselect_all (self->multi);
 }
 
 static void
@@ -492,14 +605,20 @@ ytdl_library_view_init (YtdlLibraryView *self)
   self->thumbs = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
                                         g_object_unref);
 
-  GtkSelectionModel *selection = GTK_SELECTION_MODEL (
+  self->single = GTK_SELECTION_MODEL (
       gtk_single_selection_new (G_LIST_MODEL (g_object_ref (self->store))));
+  self->multi = GTK_SELECTION_MODEL (
+      gtk_multi_selection_new (G_LIST_MODEL (g_object_ref (self->store))));
+  g_signal_connect_swapped (self->multi, "selection-changed",
+                            G_CALLBACK (emit_selection_changed), self);
 
   GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
   g_signal_connect (factory, "setup", G_CALLBACK (on_setup_item), self);
   g_signal_connect (factory, "bind", G_CALLBACK (on_bind_item), self);
 
-  self->grid = gtk_grid_view_new (selection, factory);
+  /* Browse mode is the default, and the single selection is what the grid
+   * starts with: the primary gesture on a card is "open this". */
+  self->grid = gtk_grid_view_new (g_object_ref (self->single), factory);
   gtk_grid_view_set_max_columns (GTK_GRID_VIEW (self->grid), 8);
   gtk_grid_view_set_min_columns (GTK_GRID_VIEW (self->grid), 1);
   gtk_grid_view_set_single_click_activate (GTK_GRID_VIEW (self->grid), FALSE);

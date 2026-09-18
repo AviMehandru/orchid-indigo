@@ -52,12 +52,42 @@ void ytdl_library_view_set_search (YtdlLibraryView *self, const char *needle);
 /* How many videos are showing after the filter. */
 guint ytdl_library_view_get_shown (YtdlLibraryView *self);
 
+/* Selection mode: the grid stops opening videos and starts collecting them.
+ *
+ * A MODE rather than "ctrl-click always multi-selects", because the primary
+ * gesture on a card is "open this" and a grid where a stray click adds to a
+ * hidden selection is a grid that does the wrong thing quietly. The toggle is
+ * what makes the bulk bar's appearance the user's own doing.
+ *
+ * Leaving selection mode clears the selection. Carrying it out of the mode
+ * would mean a selection nothing on screen is showing. */
+void     ytdl_library_view_set_selection_mode (YtdlLibraryView *self,
+                                               gboolean on);
+gboolean ytdl_library_view_get_selection_mode (YtdlLibraryView *self);
+
+/* The selected videos' keys, in grid order.
+ *
+ * BORROWED strings owned by the index; g_ptr_array_unref the array and do not
+ * free the elements. Empty outside selection mode. */
+GPtrArray *ytdl_library_view_selected_keys (YtdlLibraryView *self);
+
+/* Select or deselect everything the filter is currently showing -- not the
+ * whole archive. "Select all" inside a filtered view meaning the unfiltered
+ * set is how someone marks four thousand videos watched by accident. */
+void ytdl_library_view_select_all (YtdlLibraryView *self, gboolean all);
+
 /* Signal: "video-activated" (const char *key)
  *
  * Emitted when a card is activated -- double-click or Enter, GTK's convention
  * for "open this". Carries the opaque key rather than the entry, so a handler
  * cannot end up holding a pointer into an index a rescan has since replaced;
- * it looks the key up again against whatever index is current. */
+ * it looks the key up again against whatever index is current.
+ *
+ * Signal: "selection-changed" ()
+ *
+ * The bulk bar's count and sensitivity key off this. Carries nothing: the
+ * handler asks for the keys, because a signal that carried the list would
+ * build one on every click whether anything read it or not. */
 
 G_END_DECLS
 

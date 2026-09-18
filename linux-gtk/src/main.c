@@ -25,6 +25,7 @@
 #include "archive.h"
 #include "detail_view.h"
 #include "downloads_view.h"
+#include "health.h"
 #include "health_view.h"
 #include "library_filter.h"
 #include "library_view.h"
@@ -98,6 +99,30 @@ typedef struct
    * its header bar knows what it is adding. */
   char         *detail_key;
 
+  /* Multi-select and the bulk bar.
+   *
+   * A MODE rather than "ctrl-click always multi-selects": the primary gesture
+   * on a card is "open this", and a grid where a stray click adds to a hidden
+   * selection does the wrong thing quietly. */
+  GtkWidget *select_toggle;
+  GtkWidget *bulk_bar;
+  GtkWidget *bulk_count;
+  GtkWidget *bulk_select_all;
+  GtkWidget *bulk_watched;
+  GtkWidget *bulk_unwatched;
+  GtkWidget *bulk_playlist;
+  GtkWidget *bulk_refetch;
+  GtkWidget *bulk_verify;
+  GtkWidget *bulk_copy;
+
+  /* A bulk verify is the one bulk action that takes real time -- seconds per
+   * video, because it hashes every file in the folder. Written by the worker,
+   * read by a main-thread idle, atomic for the same reason the scan counters
+   * are. */
+  gboolean bulk_verifying;
+  gint     bulk_verify_done;
+  gint     bulk_verify_total;
+
   /* Collection-wide comment and transcript search. */
   YtdlSearchIndex *search_index; /* owned */
   GtkWidget       *scope_drop;
@@ -133,6 +158,9 @@ static void run_search (App *app);
 static void update_search_banner (App *app);
 static void populate_playlists (App *app);
 static void rebuild_playlist_menu (App *app);
+/* The bulk bar's own refresh, needed by the playlist handlers above it: a new
+ * playlist has to appear in the bar's Add-to menu at the moment it is made. */
+static void update_bulk_bar (App *app);
 
 /* A scan produces a whole new index; it is swapped in on the main thread so
  * the view is never looking at a half-built one. */
@@ -829,6 +857,7 @@ on_new_playlist_response (AdwAlertDialog *dialog, const char *response,
   ytdl_user_data_save (app->userdata);
   populate_playlists (app);
   rebuild_playlist_menu (app);
+  update_bulk_bar (app);
   apply_filter (app);
 }
 
@@ -900,6 +929,502 @@ rebuild_playlist_menu (App *app)
   g_menu_append (menu, "New playlist…", "win.playlist-new");
 
   gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (app->playlist_menu),
+                                  G_MENU_MODEL (menu));
+  g_object_unref (menu);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Multi-select and bulk actions                                          */
+/* ---------------------------------------------------------------------- */
+
+/* Borrowed keys, owned by the index. g_ptr_array_unref the array only. */
+static GPtrArray *
+bulk_keys (App *app)
+{
+  return ytdl_library_view_selected_keys (YTDL_LIBRARY_VIEW (app->library));
+}
+
+static void rebuild_bulk_playlist_menu (App *app);
+
+/* The count, and what is possible with it.
+ *
+ * Every bulk button is insensitive on an empty selection rather than hidden,
+ * because a bar whose contents appear and disappear as you tick boxes is a bar
+ * that moves under the pointer. */
+static void
+update_bulk_bar (App *app)
+{
+  if (app->bulk_bar == NULL)
+    return;
+
+  gboolean on = ytdl_library_view_get_selection_mode (
+      YTDL_LIBRARY_VIEW (app->library));
+  gtk_action_bar_set_revealed (GTK_ACTION_BAR (app->bulk_bar), on);
+
+  g_autoptr (GPtrArray) keys = bulk_keys (app);
+  guint n = keys->len;
+
+  g_autofree char *label =
+      n == 0 ? g_strdup ("Nothing selected")
+             : g_strdup_printf ("%u selected", n);
+  gtk_label_set_text (GTK_LABEL (app->bulk_count), label);
+
+  gboolean any = n > 0;
+  gboolean writable =
+      app->userdata != NULL && !ytdl_user_data_is_read_only (app->userdata);
+
+  gtk_widget_set_sensitive (app->bulk_watched, any && writable);
+  gtk_widget_set_sensitive (app->bulk_unwatched, any && writable);
+  gtk_widget_set_sensitive (app->bulk_playlist, any && writable);
+  gtk_widget_set_sensitive (app->bulk_copy, any);
+  /* A second bulk verify while one is running would interleave two sets of
+   * counters into one progress line. */
+  gtk_widget_set_sensitive (app->bulk_verify, any && !app->bulk_verifying);
+  gtk_widget_set_sensitive (app->bulk_refetch, any);
+
+  rebuild_bulk_playlist_menu (app);
+}
+
+static void
+on_library_selection_changed (GtkWidget *view, gpointer user_data)
+{
+  update_bulk_bar (user_data);
+}
+
+static void
+on_select_toggled (GtkToggleButton *b, gpointer user_data)
+{
+  App *app = user_data;
+  ytdl_library_view_set_selection_mode (YTDL_LIBRARY_VIEW (app->library),
+                                        gtk_toggle_button_get_active (b));
+  update_bulk_bar (app);
+}
+
+static void
+on_bulk_select_all (GtkButton *b, gpointer user_data)
+{
+  App *app = user_data;
+  /* Everything the FILTER is showing, not the whole archive: "select all"
+   * inside a filtered view meaning the unfiltered set is how somebody marks
+   * four thousand videos watched by accident. */
+  ytdl_library_view_select_all (YTDL_LIBRARY_VIEW (app->library), TRUE);
+  update_bulk_bar (app);
+}
+
+static void
+bulk_set_watched (App *app, gboolean watched)
+{
+  g_autoptr (GPtrArray) keys = bulk_keys (app);
+  if (keys->len == 0 || app->userdata == NULL)
+    return;
+
+  for (guint i = 0; i < keys->len; i++)
+    ytdl_user_data_set_watched (app->userdata, g_ptr_array_index (keys, i),
+                                watched);
+
+  /* ONE save for the whole batch. Saving per video would rewrite the store a
+   * few hundred times for one button press. */
+  ytdl_user_data_save (app->userdata);
+
+  g_autofree char *note = g_strdup_printf (
+      "Marked %u video%s %s.", keys->len, keys->len == 1 ? "" : "s",
+      watched ? "watched" : "unwatched");
+  toast (app, note);
+
+  apply_filter (app);
+  populate_facets (app);
+  update_bulk_bar (app);
+}
+
+static void
+on_bulk_watched (GtkButton *b, gpointer user_data)
+{
+  bulk_set_watched (user_data, TRUE);
+}
+
+static void
+on_bulk_unwatched (GtkButton *b, gpointer user_data)
+{
+  bulk_set_watched (user_data, FALSE);
+}
+
+static void
+on_bulk_copy_urls (GtkButton *b, gpointer user_data)
+{
+  App *app = user_data;
+  g_autoptr (GPtrArray) keys = bulk_keys (app);
+  if (keys->len == 0 || app->index == NULL)
+    return;
+
+  g_autoptr (GString) out = g_string_new (NULL);
+  guint have = 0;
+  for (guint i = 0; i < keys->len; i++)
+    {
+      const YtdlEntry *e = ytdl_index_get (app->index,
+                                           g_ptr_array_index (keys, i));
+      /* A folder with no original_url contributes nothing rather than a blank
+       * line: a list with holes in it is worse than a shorter list, because
+       * the holes are invisible once it is pasted somewhere. */
+      if (e == NULL || e->original_url == NULL || *e->original_url == '\0')
+        continue;
+      g_string_append (out, e->original_url);
+      g_string_append_c (out, '\n');
+      have++;
+    }
+
+  if (have == 0)
+    {
+      toast (app, "None of the selected videos recorded a source URL.");
+      return;
+    }
+
+  gdk_clipboard_set_text (gtk_widget_get_clipboard (app->window), out->str);
+
+  g_autofree char *note =
+      have == keys->len
+          ? g_strdup_printf ("Copied %u URL%s.", have, have == 1 ? "" : "s")
+          : g_strdup_printf ("Copied %u of %u URLs — the rest recorded none.",
+                             have, keys->len);
+  toast (app, note);
+}
+
+/* --- bulk verify ------------------------------------------------------ */
+
+/* One folder's answer, carried back to the main thread.
+ *
+ * The KEY as well as the state, because the result has to end up in the same
+ * verification cache the detail page writes -- a bulk verify whose findings
+ * the "failed verification" facet could not see would be a summary you read
+ * once and then had no way to act on. The cache is written in
+ * bulk_verify_finished: it is not thread-safe, and the entry it stamps each
+ * record against has to be looked up in an index this worker must not touch. */
+typedef struct
+{
+  char           *key;
+  YtdlVerifyState state;
+} BulkVerifyResult;
+
+static void
+bulk_verify_result_free (gpointer p)
+{
+  BulkVerifyResult *r = p;
+  if (r == NULL)
+    return;
+  g_free (r->key);
+  g_free (r);
+}
+
+typedef struct
+{
+  App       *app;
+  /* COPIES of the key and directory, because a rescan can replace the index
+   * while this runs. */
+  GPtrArray *keys; /* char*, owned */
+  GPtrArray *dirs; /* char*, owned */
+  GPtrArray *out;  /* BulkVerifyResult*, owned; handed to the main thread */
+} BulkVerifyJob;
+
+static gboolean
+bulk_verify_tick (gpointer user_data)
+{
+  App *app = user_data;
+  if (!app->bulk_verifying)
+    return G_SOURCE_REMOVE;
+
+  gint done = g_atomic_int_get (&app->bulk_verify_done);
+  gint total = g_atomic_int_get (&app->bulk_verify_total);
+  g_autofree char *note =
+      g_strdup_printf ("Verifying %d of %d…", done, total);
+  gtk_label_set_text (GTK_LABEL (app->status), note);
+  return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+bulk_verify_finished (gpointer user_data)
+{
+  BulkVerifyJob *job = user_data;
+  App *app = job->app;
+  app->bulk_verifying = FALSE;
+
+  guint bad = 0;
+  guint checked = 0;
+  guint unchecked = 0;
+
+  for (guint i = 0; i < job->out->len; i++)
+    {
+      const BulkVerifyResult *r = g_ptr_array_index (job->out, i);
+      if (r->state == YTDL_VERIFY_UNKNOWN)
+        {
+          unchecked++;
+          continue;
+        }
+
+      checked++;
+      if (r->state == YTDL_VERIFY_FAILED)
+        bad++;
+
+      /* Recorded here rather than in the worker: the cache stamps every record
+       * with the folder's archive_creation_time, which means looking the entry
+       * up in the index -- and the index belongs to this thread. */
+      const YtdlEntry *e =
+          app->index != NULL ? ytdl_index_get (app->index, r->key) : NULL;
+      if (e != NULL && app->verify != NULL)
+        ytdl_verify_cache_set (app->verify, e, r->state);
+    }
+
+  if (app->verify != NULL)
+    ytdl_verify_cache_save (app->verify);
+
+  /* THE SUMMARY HAS TO SEPARATE "passed" FROM "had nothing to check".
+   *
+   * A folder with no checksums.sha256 is not a failure -- the layout contract
+   * says a consumer must tolerate one -- but it is not a pass either, and
+   * folding it into "all 6 verified" would be this app claiming it checked six
+   * folders it never opened a single hash in. That is the same mistake the
+   * verify facet's own note exists to avoid. */
+  g_autoptr (GString) note = g_string_new (NULL);
+  if (checked == 0)
+    g_string_append_printf (note,
+                            "Nothing to verify: %u folder%s no "
+                            "checksums.sha256.",
+                            unchecked,
+                            unchecked == 1 ? " has" : "s have");
+  else if (bad == 0)
+    g_string_append_printf (note, "All %u verified.", checked);
+  else
+    g_string_append_printf (note, "%u of %u failed verification.", bad,
+                            checked);
+
+  if (checked > 0 && unchecked > 0)
+    g_string_append_printf (note, " %u had no checksums.sha256.", unchecked);
+
+  toast (app, note->str);
+  gtk_label_set_text (GTK_LABEL (app->status), note->str);
+
+  g_ptr_array_unref (job->keys);
+  g_ptr_array_unref (job->dirs);
+  g_ptr_array_unref (job->out);
+  g_free (job);
+
+  /* The verify facet can see more than it could a moment ago. */
+  populate_facets (app);
+  apply_filter (app);
+  update_bulk_bar (app);
+  return G_SOURCE_REMOVE;
+}
+
+static gpointer
+bulk_verify_thread (gpointer data)
+{
+  BulkVerifyJob *job = data;
+
+  for (guint i = 0; i < job->dirs->len; i++)
+    {
+      const char *dir = g_ptr_array_index (job->dirs, i);
+      YtdlChecksumResult *r = ytdl_health_verify_checksums (dir);
+
+      BulkVerifyResult *out = g_new0 (BulkVerifyResult, 1);
+      out->key = g_strdup (g_ptr_array_index (job->keys, i));
+
+      if (r == NULL || !r->present)
+        {
+          /* UNKNOWN, not OK. A folder with no checksums.sha256 has not passed
+           * and has not failed; recording it as a pass would put a green
+           * answer in the cache for a folder nothing hashed. */
+          out->state = YTDL_VERIFY_UNKNOWN;
+        }
+      else if (r->failed->len > 0 || r->missing->len > 0)
+        {
+          out->state = YTDL_VERIFY_FAILED;
+        }
+      else
+        {
+          out->state = YTDL_VERIFY_OK;
+        }
+
+      g_ptr_array_add (job->out, out);
+      ytdl_checksum_result_free (r);
+      g_atomic_int_inc (&job->app->bulk_verify_done);
+    }
+
+  g_idle_add (bulk_verify_finished, job);
+  return NULL;
+}
+
+static void
+on_bulk_verify (GtkButton *b, gpointer user_data)
+{
+  App *app = user_data;
+  if (app->bulk_verifying || app->index == NULL)
+    return;
+
+  g_autoptr (GPtrArray) selected = bulk_keys (app);
+  if (selected->len == 0)
+    return;
+
+  /* The keys and DIRECTORIES are copied out here, on the main thread, while
+   * the index is known to be alive. A worker holding borrowed pointers would
+   * be holding them into an index a rescan may have replaced. */
+  BulkVerifyJob *job = g_new0 (BulkVerifyJob, 1);
+  job->app = app;
+  job->keys = g_ptr_array_new_with_free_func (g_free);
+  job->dirs = g_ptr_array_new_with_free_func (g_free);
+  job->out = g_ptr_array_new_with_free_func (bulk_verify_result_free);
+
+  for (guint i = 0; i < selected->len; i++)
+    {
+      const YtdlEntry *e =
+          ytdl_index_get (app->index, g_ptr_array_index (selected, i));
+      if (e == NULL || e->dir == NULL || e->key == NULL)
+        continue;
+      g_ptr_array_add (job->keys, g_strdup (e->key));
+      g_ptr_array_add (job->dirs, g_strdup (e->dir));
+    }
+
+  if (job->dirs->len == 0)
+    {
+      g_ptr_array_unref (job->keys);
+      g_ptr_array_unref (job->dirs);
+      g_ptr_array_unref (job->out);
+      g_free (job);
+      return;
+    }
+
+  app->bulk_verifying = TRUE;
+  g_atomic_int_set (&app->bulk_verify_done, 0);
+  g_atomic_int_set (&app->bulk_verify_total, (gint) job->dirs->len);
+  update_bulk_bar (app);
+
+  g_timeout_add (200, bulk_verify_tick, app);
+  GThread *t = g_thread_new ("ytdl-bulk-verify", bulk_verify_thread, job);
+  g_thread_unref (t);
+}
+
+/* --- bulk re-fetch and bulk playlist ---------------------------------- */
+
+static void
+on_bulk_refetch (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  App *app = user_data;
+  const char *mode = g_variant_get_string (param, NULL);
+
+  g_autoptr (GPtrArray) keys = bulk_keys (app);
+  if (keys->len == 0 || app->index == NULL)
+    return;
+
+  /* ONE RUN PER VIDEO, not one run with many URLs. `ytdl --refresh` refreshes
+   * the video it is given; a session with several URLs would be a --sync-like
+   * shape the refusal list rejects, and one that failed halfway would leave no
+   * way to tell which videos were reached. Separate queue entries also mean a
+   * single failure is one red row rather than the whole batch. */
+  guint queued = 0;
+  for (guint i = 0; i < keys->len; i++)
+    {
+      const YtdlEntry *e =
+          ytdl_index_get (app->index, g_ptr_array_index (keys, i));
+      if (e == NULL || e->original_url == NULL || *e->original_url == '\0')
+        continue;
+
+      g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+      o->url = g_strdup (e->original_url);
+      o->mode = g_strdup (mode);
+      o->refresh = TRUE;
+
+      /* A per-video failure to QUEUE -- a full queue, an unwritable state
+       * directory -- stops the batch rather than silently dropping the rest of
+       * it, and says which video it stopped on. Carrying on would report a
+       * count that was never true. */
+      GError *error = NULL;
+      g_autofree char *id = ytdl_runner_enqueue (app->runner, o, &error);
+      if (id == NULL)
+        {
+          g_autofree char *why = g_strdup_printf (
+              "Queued %u before failing: %s", queued,
+              error != NULL ? error->message : "could not queue the run");
+          toast (app, why);
+          g_clear_error (&error);
+          return;
+        }
+      queued++;
+    }
+
+  if (queued == 0)
+    {
+      toast (app, "None of the selected videos recorded a source URL.");
+      return;
+    }
+
+  g_autofree char *note = g_strdup_printf (
+      "Queued %u %s refresh%s.", queued, mode, queued == 1 ? "" : "es");
+  toast (app, note);
+  adw_view_stack_set_visible_child_name (ADW_VIEW_STACK (app->stack),
+                                         "downloads");
+}
+
+static void
+on_bulk_playlist_add (GSimpleAction *action, GVariant *param,
+                      gpointer user_data)
+{
+  App *app = user_data;
+  const char *id = g_variant_get_string (param, NULL);
+
+  g_autoptr (GPtrArray) keys = bulk_keys (app);
+  if (keys->len == 0 || app->userdata == NULL)
+    return;
+
+  guint added = 0;
+  for (guint i = 0; i < keys->len; i++)
+    {
+      /* playlist_add returns FALSE for a key already in the list, which is a
+       * no-op rather than an error -- so the count is "newly added", which is
+       * the number worth reporting. */
+      if (ytdl_user_data_playlist_add (app->userdata, id,
+                                       g_ptr_array_index (keys, i)))
+        added++;
+    }
+
+  ytdl_user_data_save (app->userdata);
+
+  const YtdlPlaylist *pl = ytdl_user_data_playlist (app->userdata, id);
+  g_autofree char *note = g_strdup_printf (
+      "Added %u video%s to %s.", added, added == 1 ? "" : "s",
+      pl != NULL ? pl->name : "the playlist");
+  toast (app, note);
+
+  apply_playlist_selection (app);
+  apply_filter (app);
+}
+
+/* The bulk bar's playlist menu. One item per playlist plus New playlist… --
+ * and deliberately ADD-ONLY, with no tick marks: a mixed selection where some
+ * videos are in a playlist and some are not has no honest checkbox state, and
+ * a control that flipped each one independently would remove half of them. */
+static void
+rebuild_bulk_playlist_menu (App *app)
+{
+  if (app->bulk_playlist == NULL || app->userdata == NULL)
+    return;
+
+  GMenu *menu = g_menu_new ();
+  GPtrArray *playlists = ytdl_user_data_playlists (app->userdata);
+
+  for (guint i = 0; i < playlists->len; i++)
+    {
+      const YtdlPlaylist *pl = g_ptr_array_index (playlists, i);
+      g_autoptr (GMenuItem) item = g_menu_item_new (pl->name, NULL);
+      g_menu_item_set_action_and_target_value (item, "win.bulk-playlist-add",
+                                               g_variant_new_string (pl->id));
+      g_menu_append_item (menu, item);
+    }
+
+  if (playlists->len == 0)
+    {
+      g_autoptr (GMenuItem) empty =
+          g_menu_item_new ("No playlists yet", NULL);
+      g_menu_append_item (menu, empty);
+    }
+
+  gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (app->bulk_playlist),
                                   G_MENU_MODEL (menu));
   g_object_unref (menu);
 }
@@ -1511,12 +2036,25 @@ build_main_page (App *app)
                                build_filter_popover (app));
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->filter_button);
 
+  /* The selection-mode switch. In the header rather than in the bulk bar,
+   * because the bar is what it reveals: a control that dismissed the thing it
+   * lives inside would have nowhere to be when the bar was hidden. */
+  app->select_toggle = gtk_toggle_button_new ();
+  gtk_button_set_icon_name (GTK_BUTTON (app->select_toggle),
+                            "object-select-symbolic");
+  gtk_widget_set_tooltip_text (app->select_toggle, "Select videos");
+  g_signal_connect (app->select_toggle, "toggled",
+                    G_CALLBACK (on_select_toggled), app);
+  adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->select_toggle);
+
   /* --- the three pages -------------------------------------------- */
   app->stack = adw_view_stack_new ();
 
   app->library = ytdl_library_view_new ();
   g_signal_connect (app->library, "video-activated",
                     G_CALLBACK (on_video_activated), app);
+  g_signal_connect (app->library, "selection-changed",
+                    G_CALLBACK (on_library_selection_changed), app);
 
   /* The saved ordering, before the first scan so the first grid ever drawn
    * is already in the order this user chose. The FACETS deliberately do not
@@ -1613,6 +2151,91 @@ build_main_page (App *app)
   gtk_widget_add_css_class (status_bar, "toolbar");
   gtk_box_append (GTK_BOX (status_bar), app->status);
 
+  /* --- bulk bar ---------------------------------------------------- */
+  /*
+   * A GtkActionBar rather than a box: it has the revealer, the start/centre/end
+   * packing and the toolbar styling already, and set_revealed animates rather
+   * than making the window jump by a row.
+   *
+   * Every button stays VISIBLE and goes insensitive on an empty selection. A
+   * bar whose contents appear and disappear as you tick boxes is a bar that
+   * moves under the pointer.
+   */
+  app->bulk_bar = gtk_action_bar_new ();
+  gtk_action_bar_set_revealed (GTK_ACTION_BAR (app->bulk_bar), FALSE);
+
+  app->bulk_count = gtk_label_new ("Nothing selected");
+  gtk_widget_add_css_class (app->bulk_count, "dim-label");
+  gtk_widget_add_css_class (app->bulk_count, "caption");
+  gtk_action_bar_pack_start (GTK_ACTION_BAR (app->bulk_bar), app->bulk_count);
+
+  app->bulk_select_all = gtk_button_new_with_label ("Select all");
+  gtk_widget_set_tooltip_text (
+      app->bulk_select_all,
+      "Everything the current filter is showing — not the whole archive.");
+  g_signal_connect (app->bulk_select_all, "clicked",
+                    G_CALLBACK (on_bulk_select_all), app);
+  gtk_action_bar_pack_start (GTK_ACTION_BAR (app->bulk_bar),
+                             app->bulk_select_all);
+
+  app->bulk_watched = gtk_button_new_with_label ("Mark watched");
+  g_signal_connect (app->bulk_watched, "clicked",
+                    G_CALLBACK (on_bulk_watched), app);
+  gtk_action_bar_pack_start (GTK_ACTION_BAR (app->bulk_bar),
+                             app->bulk_watched);
+
+  app->bulk_unwatched = gtk_button_new_with_label ("Mark unwatched");
+  g_signal_connect (app->bulk_unwatched, "clicked",
+                    G_CALLBACK (on_bulk_unwatched), app);
+  gtk_action_bar_pack_start (GTK_ACTION_BAR (app->bulk_bar),
+                             app->bulk_unwatched);
+
+  app->bulk_playlist = gtk_menu_button_new ();
+  gtk_menu_button_set_label (GTK_MENU_BUTTON (app->bulk_playlist),
+                             "Add to playlist");
+  gtk_action_bar_pack_start (GTK_ACTION_BAR (app->bulk_bar),
+                             app->bulk_playlist);
+
+  /* The re-fetch menu is FIXED rather than built from the pipeline's mode
+   * list: only the three no-media modes are refreshable, which is ytdl.ps1's
+   * own rule, and offering "full" here would queue a batch the pipeline
+   * refuses one run at a time. */
+  {
+    GMenu *refetch = g_menu_new ();
+    static const struct { const char *label; const char *mode; } modes[] = {
+      { "Re-fetch comments", "comments-only" },
+      { "Re-fetch subtitles", "subs-only" },
+      { "Re-fetch metadata", "metadata-only" },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS (modes); i++)
+      {
+        g_autoptr (GMenuItem) item = g_menu_item_new (modes[i].label, NULL);
+        g_menu_item_set_action_and_target_value (
+            item, "win.bulk-refetch", g_variant_new_string (modes[i].mode));
+        g_menu_append_item (refetch, item);
+      }
+
+    app->bulk_refetch = gtk_menu_button_new ();
+    gtk_menu_button_set_label (GTK_MENU_BUTTON (app->bulk_refetch), "Re-fetch");
+    gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (app->bulk_refetch),
+                                    G_MENU_MODEL (refetch));
+    g_object_unref (refetch);
+  }
+  gtk_action_bar_pack_end (GTK_ACTION_BAR (app->bulk_bar), app->bulk_refetch);
+
+  app->bulk_verify = gtk_button_new_with_label ("Verify");
+  gtk_widget_set_tooltip_text (
+      app->bulk_verify,
+      "Re-hashes every file in each selected folder. Seconds per video.");
+  g_signal_connect (app->bulk_verify, "clicked", G_CALLBACK (on_bulk_verify),
+                    app);
+  gtk_action_bar_pack_end (GTK_ACTION_BAR (app->bulk_bar), app->bulk_verify);
+
+  app->bulk_copy = gtk_button_new_with_label ("Copy URLs");
+  g_signal_connect (app->bulk_copy, "clicked", G_CALLBACK (on_bulk_copy_urls),
+                    app);
+  gtk_action_bar_pack_end (GTK_ACTION_BAR (app->bulk_bar), app->bulk_copy);
+
   app->switcher_bar = adw_view_switcher_bar_new ();
   adw_view_switcher_bar_set_stack (ADW_VIEW_SWITCHER_BAR (app->switcher_bar),
                                    ADW_VIEW_STACK (app->stack));
@@ -1633,6 +2256,7 @@ build_main_page (App *app)
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), app->search_bar);
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), app->index_banner);
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), app->stack);
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar), app->bulk_bar);
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar), status_bar);
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (toolbar),
                                    app->switcher_bar);
@@ -1731,6 +2355,8 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
       { "playlist-toggle", on_playlist_toggle_membership, "s", NULL, NULL,
         { 0 } },
       { "playlist-new", on_new_playlist, NULL, NULL, NULL, { 0 } },
+      { "bulk-playlist-add", on_bulk_playlist_add, "s", NULL, NULL, { 0 } },
+      { "bulk-refetch", on_bulk_refetch, "s", NULL, NULL, { 0 } },
     };
     g_action_map_add_action_entries (G_ACTION_MAP (app->window),
                                      playlist_actions,
