@@ -7,6 +7,10 @@
 # find a .desktop file for, and GLib drops that refusal on the floor. Rename
 # one and the other must follow.
 #
+# X-GNOME-UsesNotifications is what lists the app under Settings >
+# Notifications, which is where GNOME lets a person silence it -- without
+# it, the only off switch would be the one inside this app.
+#
 # Icon names the app ID too. No icon is installed yet (gap H), so the
 # desktop shows its generic application icon until one is; naming it now
 # means the icon, when it arrives, needs no change here.
@@ -21,3 +25,4 @@ Terminal=false
 Categories=AudioVideo;Video;
 Keywords=youtube;yt-dlp;download;archive;
 StartupNotify=true
+X-GNOME-UsesNotifications=true

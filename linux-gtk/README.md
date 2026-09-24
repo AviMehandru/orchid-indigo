@@ -121,6 +121,15 @@ preview. A proxy password is masked in the command preview and the stored
 history. While runs are waiting, the queue says that it is sequential on
 purpose and points at Workers. Needs `0003-orchid-ochre` or later.
 
+**Notifications** — while the window is in the background, a desktop
+notification when the queue finishes (one summary per queue, not one per run)
+and as soon as a run fails; clicking it brings the window back on Downloads.
+Switch it off under **When you are away**. On GNOME it needs the launcher
+entry installed (`meson install`, or copy `data/*.desktop` into
+`~/.local/share/applications`): GNOME Shell drops a notification from an app
+it has no `.desktop` file for, silently, so a build run straight from the
+build tree shows nothing.
+
 **Health** — the seven dependencies probed in parallel with versions and an
 8-second ceiling each, which pipeline files are actually installed (not what
 is in a checkout), `CONFIG_VERSION`, archive counts, the archive root actually

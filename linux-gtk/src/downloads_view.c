@@ -85,6 +85,9 @@ struct _YtdlDownloadsView
   GtkWidget *downloader;
   gboolean   loading_connection; /* suppresses the save while filling */
 
+  /* Desktop notifications, a setting like the Connection group. */
+  GtkWidget *notify_row;
+
   /* One sentence under the Queue heading. See update_queue_note. */
   GtkWidget *queue_note;
 
@@ -1926,6 +1929,17 @@ load_connection (YtdlDownloadsView *self)
   update_connection_visibility (self);
 }
 
+/* Saved at once, like the Connection settings. main.c reads the flag each
+ * time it has something to announce, so there is nothing else to tell. */
+static void
+on_notify_toggled (GObject *obj, GParamSpec *pspec, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  self->settings->notify =
+      adw_switch_row_get_active (ADW_SWITCH_ROW (self->notify_row));
+  ytdl_settings_save (self->settings);
+}
+
 static void
 on_cookie_file_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
 {
@@ -2575,6 +2589,28 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
       "native");
   adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup), self->downloader);
   gtk_box_append (GTK_BOX (form), cgroup);
+
+  /* --- Notifications ------------------------------------------------- */
+  /* Its own group rather than a row under Connection, which is about how
+   * YouTube is reached. Beside it because it is the same kind of thing: a
+   * setting, saved as it changes, and not part of a profile. */
+  GtkWidget *ngroup = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (ngroup),
+                                   "When you are away");
+  self->notify_row = adw_switch_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->notify_row),
+      "Notify when the queue finishes or a run fails");
+  adw_action_row_set_subtitle (
+      ADW_ACTION_ROW (self->notify_row),
+      "Only while this window is in the background. One summary per queue, "
+      "not one per run; a failure is announced as it happens.");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (self->notify_row),
+                             settings->notify);
+  g_signal_connect (self->notify_row, "notify::active",
+                    G_CALLBACK (on_notify_toggled), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (ngroup), self->notify_row);
+  gtk_box_append (GTK_BOX (form), ngroup);
 
   /* Filled BEFORE the change handlers are connected, so loading the saved
    * values does not immediately write them back. */

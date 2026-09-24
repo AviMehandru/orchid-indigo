@@ -55,6 +55,9 @@ ytdl_settings_load (void)
    * launch oldest-first. Found by running the app and reading the grid, not
    * by reading this file. */
   s->sort_descending = TRUE;
+  /* Same reason: a default set only in the parse would leave a fresh install
+   * -- the one with no settings.json -- with notifications off. */
+  s->notify = TRUE;
 
   g_autofree char *path = settings_path ();
   g_autoptr (JsonParser) parser = json_parser_new ();
@@ -89,6 +92,11 @@ ytdl_settings_load (void)
   s->proxy = opt_string (obj, "proxy");
   s->limit_rate = opt_string (obj, "limit_rate");
   s->downloader = opt_string (obj, "downloader");
+  /* Absent reads as TRUE, for the upgrade case: a settings.json written
+   * before this key existed must not switch notifications off. */
+  s->notify = json_object_has_member (obj, "notify")
+                  ? json_object_get_boolean_member (obj, "notify")
+                  : TRUE;
   return s;
 }
 
@@ -174,6 +182,8 @@ ytdl_settings_save (const YtdlSettings *s)
   STR ("limit_rate", s->limit_rate);
   STR ("downloader", s->downloader);
 #undef STR
+  json_builder_set_member_name (b, "notify");
+  json_builder_add_boolean_value (b, s->notify);
   json_builder_end_object (b);
 
   g_autoptr (JsonGenerator) gen = json_generator_new ();

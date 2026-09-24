@@ -70,6 +70,7 @@ core_sources = files(
   'src/settings.c',
   'src/media.c',
   'src/profiles.c',
+  'src/notify.c',
 )
 
 core = static_library('ytdlcore', core_sources,
@@ -125,7 +126,7 @@ test_archive = executable('test-archive',
   files('tests/test_archive.c', 'tests/test_pipeline.c', 'tests/test_detail.c',
         'tests/test_profiles.c', 'tests/test_paths.c', 'tests/test_url_probe.c',
         'tests/test_library.c', 'tests/test_search.c',
-        'tests/test_userdata.c'),
+        'tests/test_userdata.c', 'tests/test_notify.c'),
   c_args : ['-DYTDL_CLI_VERSION_PATH="' + cli_version + '"'],
   dependencies : deps,
   link_with : core,

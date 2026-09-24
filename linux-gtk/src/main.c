@@ -29,6 +29,7 @@
 #include "health_view.h"
 #include "library_filter.h"
 #include "library_view.h"
+#include "notify.h"
 #include "paths.h"
 #include "pipeline.h"
 #include "profiles.h"
@@ -54,6 +55,11 @@ typedef struct
 
   YtdlSettings *settings;
   YtdlRunner   *runner;
+  /* What the queue has done that has not been announced yet. Owned. Fed on
+   * every runner state change whether or not anything will be sent, so a
+   * summary sent later still covers the whole queue. See notify.h. */
+  YtdlNoticeTracker *notices;
+  GtkApplication    *gtkapp; /* borrowed; for sending notifications */
   GtkWidget *search_bar;
   GtkWidget *search;
   GtkWidget *search_button;
@@ -2295,6 +2301,66 @@ build_detail_page (App *app)
   return GTK_WIDGET (page);
 }
 
+/* ---------------------------------------------------------------------- */
+/* Notifications                                                          */
+/* ---------------------------------------------------------------------- */
+
+/* Connected here rather than in the Downloads view, because a queue that
+ * finishes while the Library is showing is exactly the case this is for, and
+ * the view only exists to be looked at.
+ *
+ * The tracker is updated FIRST and unconditionally. The two checks after it
+ * -- the setting, and whether the window is the one with focus -- decide only
+ * whether this particular notice is sent, never what the tracker knows. */
+static void
+on_runner_settled (YtdlRunner *runner, gpointer user_data)
+{
+  App *app = user_data;
+
+  guint remaining = 0;
+  g_autoptr (GPtrArray) history = ytdl_runner_settled (runner, &remaining);
+  g_autoptr (YtdlNotice) notice =
+      ytdl_notice_tracker_update (app->notices, history, remaining);
+  if (notice == NULL || !app->settings->notify)
+    return;
+
+  /* Looked up, not app->window: this can run while the application is
+   * shutting down, after the window has gone, and a stored pointer would be
+   * dangling by then. NULL means there is no window to be away from. */
+  GtkWindow *win = gtk_application_get_active_window (app->gtkapp);
+  if (win == NULL || gtk_window_is_active (win))
+    return;
+
+  g_autoptr (GNotification) n = g_notification_new (notice->title);
+  g_notification_set_body (n, notice->body);
+  /* HIGH, not URGENT: urgent is for things that must break through Do Not
+   * Disturb, and a failed download is not a fire alarm. */
+  g_notification_set_priority (n, notice->failure
+                                      ? G_NOTIFICATION_PRIORITY_HIGH
+                                      : G_NOTIFICATION_PRIORITY_NORMAL);
+  g_notification_set_default_action (n, "app.show-downloads");
+  /* One id for everything: a later notice REPLACES an earlier one rather
+   * than stacking under it (notify.h, rule 3). */
+  g_application_send_notification (G_APPLICATION (app->gtkapp),
+                                   YTDL_NOTICE_ID, n);
+}
+
+/* What clicking a notification does: bring the window forward on the page
+ * that explains it. On the APPLICATION, because that is the only action map
+ * a notification can reach -- the desktop activates it over D-Bus by the
+ * app's own id. */
+static void
+on_show_downloads (GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  App *app = user_data;
+  if (app->window == NULL)
+    return;
+  adw_navigation_view_pop_to_tag (ADW_NAVIGATION_VIEW (app->nav), "main");
+  adw_view_stack_set_visible_child_name (ADW_VIEW_STACK (app->stack),
+                                         "downloads");
+  gtk_window_present (GTK_WINDOW (app->window));
+}
+
 static void
 on_activate (GtkApplication *gtkapp, gpointer user_data)
 {
@@ -2376,6 +2442,17 @@ on_activate (GtkApplication *gtkapp, gpointer user_data)
   rebuild_playlist_menu (app);
   gtk_window_present (GTK_WINDOW (app->window));
 
+  app->gtkapp = gtkapp;
+  {
+    static const GActionEntry app_actions[] = {
+      { "show-downloads", on_show_downloads, NULL, NULL, NULL, { 0 } },
+    };
+    g_action_map_add_action_entries (G_ACTION_MAP (gtkapp), app_actions,
+                                     G_N_ELEMENTS (app_actions), app);
+  }
+  g_signal_connect (app->runner, "state-changed",
+                    G_CALLBACK (on_runner_settled), app);
+
   /* The worker starts only once the window it will emit into is real, which
    * is why ytdl_runner_new does not start it. A restored queue would
    * otherwise begin producing events with nothing connected to receive them. */
@@ -2421,6 +2498,13 @@ main (int argc, char **argv)
   ytdl_profiles_seed_default ();
 
   app.runner = ytdl_runner_new ();
+  /* Seeded with the history the runner just restored, so last session's runs
+   * are never announced as if they had just finished (notify.h, rule 5).
+   * Before the worker starts, so nothing can finish in between. */
+  {
+    g_autoptr (GPtrArray) restored = ytdl_runner_history (app.runner);
+    app.notices = ytdl_notice_tracker_new (restored);
+  }
   /* Before anything can enqueue, so the very first run -- including a re-fetch
    * started from a video's page before the Downloads pane is ever opened --
    * goes out with the saved cookies and proxy. The Downloads pane updates it
@@ -2474,6 +2558,7 @@ main (int argc, char **argv)
    * would otherwise touch state that has already been freed. */
   ytdl_runner_stop (app.runner);
   g_clear_object (&app.runner);
+  g_clear_pointer (&app.notices, ytdl_notice_tracker_free);
   /* Written once, on the way out, rather than after every verify: this is a
    * cache, the only cost of losing the last few results is re-hashing those
    * folders, and a JSON rewrite per verification would be the more

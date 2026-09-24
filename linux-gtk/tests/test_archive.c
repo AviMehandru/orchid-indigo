@@ -537,6 +537,11 @@ void ytdl_register_search_tests (void);
  * cannot be parsed. */
 void ytdl_register_userdata_tests (void);
 
+/* Defined in test_notify.c -- what the queue announces when you are not
+ * looking at the window, and the runner accessor that says when a queue has
+ * finished. */
+void ytdl_register_notify_tests (void);
+
 int
 main (int argc, char **argv)
 {
@@ -574,6 +579,7 @@ main (int argc, char **argv)
   ytdl_register_library_tests ();
   ytdl_register_search_tests ();
   ytdl_register_userdata_tests ();
+  ytdl_register_notify_tests ();
 
   return g_test_run ();
 }

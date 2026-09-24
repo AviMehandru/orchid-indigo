@@ -61,6 +61,13 @@ typedef struct
   char *proxy;
   char *limit_rate;
   char *downloader;      /* NULL = native */
+
+  /* Whether a finished queue or a failed run is announced as a desktop
+   * notification while the window is in the background. On by default: the
+   * point is to hear about the run that failed at 3am, and a setting that has
+   * to be found first is one most people would never turn on. See notify.h
+   * for what is announced and when. */
+  gboolean notify;
 } YtdlSettings;
 
 YtdlSettings *ytdl_settings_load (void);

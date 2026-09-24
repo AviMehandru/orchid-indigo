@@ -677,6 +677,13 @@ struct _YtdlRunner
   GPtrArray *queue;   /* YtdlRunRecord* */
   GPtrArray *history; /* YtdlRunRecord* */
   YtdlRunRecord *current;
+  /* TRUE from the moment the worker takes an item off the queue until
+   * finish_run files it in history. Wider than `current != NULL`, which
+   * only becomes true once run_one has resolved pwsh and the log path: in
+   * between, the item is in neither list, and a reader asking "is anything
+   * left to do?" would be told no. See ytdl_runner_settled. Guarded by
+   * @lock, like everything beside it. */
+  gboolean       in_flight;
   YtdlProgress   progress;
   GPtrArray     *log; /* char* */
   gboolean       paused;
@@ -1190,6 +1197,7 @@ finish_run (YtdlRunner *self, YtdlRunRecord *rec)
 {
   g_mutex_lock (&self->lock);
   g_clear_pointer (&self->current, ytdl_run_record_free);
+  self->in_flight = FALSE;
   self->child_pid = 0;
   ytdl_progress_clear (&self->progress);
   g_ptr_array_insert (self->history, 0, rec);
@@ -1357,6 +1365,7 @@ worker_thread (gpointer data)
           g_cond_wait_until (&self->wake, &self->lock, until);
         }
       item = g_ptr_array_steal_index (self->queue, 0);
+      self->in_flight = TRUE;
       persist_locked (self);
       g_mutex_unlock (&self->lock);
       mark_state_dirty (self);
@@ -1527,6 +1536,20 @@ ytdl_runner_history (YtdlRunner *self)
   g_return_val_if_fail (YTDL_IS_RUNNER (self), NULL);
   g_mutex_lock (&self->lock);
   GPtrArray *out = copy_records (self->history);
+  g_mutex_unlock (&self->lock);
+  return out;
+}
+
+GPtrArray *
+ytdl_runner_settled (YtdlRunner *self, guint *remaining)
+{
+  g_return_val_if_fail (YTDL_IS_RUNNER (self), NULL);
+  g_mutex_lock (&self->lock);
+  GPtrArray *out = copy_records (self->history);
+  /* current is only ever set while in_flight is, so in_flight alone counts
+   * the run in progress. */
+  if (remaining != NULL)
+    *remaining = self->queue->len + (self->in_flight ? 1 : 0);
   g_mutex_unlock (&self->lock);
   return out;
 }

@@ -280,6 +280,21 @@ void ytdl_runner_clear_history (YtdlRunner *self);
 GPtrArray *ytdl_runner_queue (YtdlRunner *self);   /* YtdlRunRecord*, owned */
 GPtrArray *ytdl_runner_history (YtdlRunner *self); /* YtdlRunRecord*, owned */
 YtdlRunRecord *ytdl_runner_current (YtdlRunner *self); /* NULL when idle */
+
+/* The history, and how many runs are still to run -- both read under ONE
+ * acquisition of the lock. Zero remaining means the runner has nothing left
+ * to do: the queue is empty and nothing is in flight.
+ *
+ * For deciding that a queue has FINISHED, which the accessors above cannot
+ * answer. Each takes the lock separately, so a run can end between a history
+ * read and a queue read and be counted in neither. And "finished" is not
+ * `queue empty && current == NULL`: the worker takes the next item off the
+ * queue before run_one sets current, and in that gap the pair reads as done
+ * while a run is about to start. The in-flight run is counted here for all
+ * of that gap. A paused queue with items waiting is not finished.
+ *
+ * Returns YtdlRunRecord*, owned, newest first. */
+GPtrArray *ytdl_runner_settled (YtdlRunner *self, guint *remaining);
 void ytdl_runner_progress (YtdlRunner *self, YtdlProgress *out);
 void ytdl_progress_clear (YtdlProgress *p);
 
