@@ -168,6 +168,202 @@ test_command_preview_quotes (void)
                    "ytdl \"https://example.com/v\" --ytdlp-arg \"a b\"");
 }
 
+/* ---------------------------------------------------------------------- */
+/* The options that used to be reachable only through the Advanced box    */
+/* ---------------------------------------------------------------------- */
+
+static void
+test_media_options_emit_in_order (void)
+{
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("u");
+  o->container = g_strdup ("mkv");
+  o->fps = 30;
+  o->sub_langs = g_strdup ("en.*,de");
+  o->no_chapters = TRUE;
+  o->sponsorblock_remove = g_strdup ("sponsor,selfpromo");
+  o->no_subs = FALSE;
+
+  g_autofree char *joined = args_of (o);
+  g_assert_cmpstr (joined, ==,
+                   "u|--fps|30|--sub-langs|en.*,de|--no-chapters|"
+                   "--sponsorblock-remove|sponsor,selfpromo");
+}
+
+static void
+test_new_options_default_to_nothing (void)
+{
+  /* A profile or a queued run written before these fields existed loads with
+   * all of them zero, and must produce the command line it always did. */
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("u");
+  o->sub_langs = g_strdup ("   ");
+  o->downloader = g_strdup ("native");
+  g_autofree char *joined = args_of (o);
+  g_assert_cmpstr (joined, ==, "u");
+}
+
+/* The connection options, and where they sit: after every content option and
+ * before the passthrough, so a --ytdlp-arg --proxy from before these existed
+ * still comes last and still wins. */
+static void
+test_connection_options_emit_before_passthrough (void)
+{
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("u");
+  o->no_subs = TRUE;
+  o->cookies_from_browser = g_strdup ("firefox:default");
+  o->proxy = g_strdup ("socks5://u:pw@h:1080");
+  o->limit_rate = g_strdup ("2M");
+  o->downloader = g_strdup ("aria2c");
+  g_ptr_array_add (o->ytdlp_args, g_strdup ("--proxy"));
+
+  g_autofree char *joined = args_of (o);
+  g_assert_cmpstr (joined, ==,
+                   "u|--no-subs|--cookies-from-browser|firefox:default|"
+                   "--proxy|socks5://u:pw@h:1080|--limit-rate|2M|"
+                   "--downloader|aria2c|--ytdlp-arg|--proxy");
+}
+
+static void
+test_probe_gets_cookies_and_proxy_only (void)
+{
+  /* ytdl --probe refuses --limit-rate and --downloader. Cookies and proxy it
+   * takes, because they change what yt-dlp can see. */
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->cookies_file = g_strdup ("/home/me/cookies.txt");
+  o->proxy = g_strdup ("http://p:3128");
+  o->limit_rate = g_strdup ("2M");
+  o->downloader = g_strdup ("aria2c");
+
+  g_auto (GStrv) probe = ytdl_run_options_connection_args (o, TRUE);
+  g_autofree char *p = g_strjoinv ("|", probe);
+  g_assert_cmpstr (p, ==, "--cookies|/home/me/cookies.txt|--proxy|http://p:3128");
+
+  g_auto (GStrv) run = ytdl_run_options_connection_args (o, FALSE);
+  g_autofree char *r = g_strjoinv ("|", run);
+  g_assert_cmpstr (r, ==,
+                   "--cookies|/home/me/cookies.txt|--proxy|http://p:3128|"
+                   "--limit-rate|2M|--downloader|aria2c");
+}
+
+/* Shared fixture: the Swift and C# suites assert these same six pairs. */
+static void
+test_redact_proxy (void)
+{
+  static const char *const cases[][2] = {
+    { "socks5://me:hunter2@127.0.0.1:1080", "socks5://***@127.0.0.1:1080" },
+    { "http://user@proxy:3128", "http://***@proxy:3128" },
+    { "http://proxy:3128", "http://proxy:3128" },
+    { "https://a:b@c@host:1/", "https://***@host:1/" },
+    { "socks5h://u:p@[::1]:1080", "socks5h://***@[::1]:1080" },
+    { "not a url", "not a url" },
+  };
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      g_autofree char *got = ytdl_redact_proxy (cases[i][0]);
+      g_assert_cmpstr (got, ==, cases[i][1]);
+    }
+}
+
+static void
+test_preview_masks_the_proxy_password_and_argv_does_not (void)
+{
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("u");
+  o->proxy = g_strdup ("socks5://me:hunter2@h:1080");
+
+  g_autofree char *cmd = ytdl_run_options_command_preview (o);
+  g_assert_null (strstr (cmd, "hunter2"));
+  g_assert_nonnull (strstr (cmd, "--proxy socks5://***@h:1080"));
+
+  /* The real argv must carry it whole, or the proxy would refuse the run. */
+  g_autofree char *joined = args_of (o);
+  g_assert_nonnull (strstr (joined, "socks5://me:hunter2@h:1080"));
+}
+
+/* The rules the form's greyed-out rows follow. Shared fixture with the Swift
+ * and C# suites, row for row. */
+static void
+test_drop_inapplicable (void)
+{
+  /* A no-media mode drops everything that describes the media file... */
+  {
+    g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+    o->mode = g_strdup ("comments-only");
+    o->fps = 30;
+    o->no_chapters = TRUE;
+    o->sponsorblock_mark = g_strdup ("all");
+    o->sponsorblock_remove = g_strdup ("sponsor");
+    o->sub_langs = g_strdup ("de");
+    o->proxy = g_strdup ("http://p:1");
+    ytdl_run_options_drop_inapplicable (o);
+    g_assert_cmpuint (o->fps, ==, 0);
+    g_assert_false (o->no_chapters);
+    g_assert_null (o->sponsorblock_mark);
+    g_assert_null (o->sponsorblock_remove);
+    /* ...and keeps what still applies: subtitles are written in every mode,
+     * and the connection is not the form's to drop. */
+    g_assert_cmpstr (o->sub_langs, ==, "de");
+    g_assert_cmpstr (o->proxy, ==, "http://p:1");
+  }
+  /* Skipping subtitles drops the language list. */
+  {
+    g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+    o->no_subs = TRUE;
+    o->sub_langs = g_strdup ("de");
+    ytdl_run_options_drop_inapplicable (o);
+    g_assert_null (o->sub_langs);
+  }
+  /* Marking needs chapters, so it wins over switching them off. */
+  {
+    g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+    o->mode = g_strdup ("full");
+    o->no_chapters = TRUE;
+    o->sponsorblock_mark = g_strdup ("all");
+    ytdl_run_options_drop_inapplicable (o);
+    g_assert_false (o->no_chapters);
+    g_assert_cmpstr (o->sponsorblock_mark, ==, "all");
+  }
+  /* A media mode keeps everything. */
+  {
+    g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+    o->mode = g_strdup ("audio-only");
+    o->fps = 60;
+    o->no_chapters = TRUE;
+    o->sponsorblock_remove = g_strdup ("sponsor");
+    ytdl_run_options_drop_inapplicable (o);
+    g_assert_cmpuint (o->fps, ==, 60);
+    g_assert_true (o->no_chapters);
+    g_assert_cmpstr (o->sponsorblock_remove, ==, "sponsor");
+  }
+}
+
+static void
+test_new_fields_round_trip_json (void)
+{
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("u");
+  o->fps = 60;
+  o->sub_langs = g_strdup ("all,-live_chat");
+  o->no_chapters = TRUE;
+  o->sponsorblock_mark = g_strdup ("all,-filler");
+  o->cookies_file = g_strdup ("/c.txt");
+  o->proxy = g_strdup ("http://p:1");
+  o->limit_rate = g_strdup ("500K");
+  o->downloader = g_strdup ("aria2c");
+
+  g_autoptr (JsonBuilder) b = json_builder_new ();
+  ytdl_run_options_build_json (b, o);
+  g_autoptr (JsonNode) root = json_builder_get_root (b);
+  g_autoptr (YtdlRunOptions) back =
+      ytdl_run_options_from_json (json_node_get_object (root));
+
+  g_autofree char *a = args_of (o);
+  g_autofree char *z = args_of (back);
+  g_assert_cmpstr (a, ==, z);
+}
+
 static void
 test_strip_ansi (void)
 {
@@ -284,6 +480,20 @@ ytdl_register_pipeline_tests (void)
   g_test_add_func ("/pipeline/passthrough-repeats", test_passthrough_args_repeat);
   g_test_add_func ("/pipeline/data-root-tilde", test_data_root_tilde_is_expanded);
   g_test_add_func ("/pipeline/command-preview", test_command_preview_quotes);
+  g_test_add_func ("/pipeline/media-options-emit-in-order",
+                   test_media_options_emit_in_order);
+  g_test_add_func ("/pipeline/new-options-default-to-nothing",
+                   test_new_options_default_to_nothing);
+  g_test_add_func ("/pipeline/connection-before-passthrough",
+                   test_connection_options_emit_before_passthrough);
+  g_test_add_func ("/pipeline/probe-gets-cookies-and-proxy-only",
+                   test_probe_gets_cookies_and_proxy_only);
+  g_test_add_func ("/pipeline/redact-proxy", test_redact_proxy);
+  g_test_add_func ("/pipeline/preview-masks-proxy-password",
+                   test_preview_masks_the_proxy_password_and_argv_does_not);
+  g_test_add_func ("/pipeline/drop-inapplicable", test_drop_inapplicable);
+  g_test_add_func ("/pipeline/new-fields-round-trip-json",
+                   test_new_fields_round_trip_json);
   g_test_add_func ("/pipeline/strip-ansi", test_strip_ansi);
   g_test_add_func ("/pipeline/progress-line", test_progress_line);
   g_test_add_func ("/pipeline/session-summary", test_session_summary);

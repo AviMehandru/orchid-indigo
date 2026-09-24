@@ -86,6 +86,27 @@ typedef struct
    * sets this is the re-fetch row on a video's own page. */
   gboolean refresh;
 
+  /* The rest of the media description -- the options competitors expose as
+   * controls that this app used to reach only through the Advanced box. Each
+   * maps to one ytdl.ps1 flag and each is validated THERE, like everything
+   * above; see the comment at the top of this struct. */
+  guint    fps;                 /* --fps; 0 = no ceiling */
+  char    *sub_langs;           /* --sub-langs; NULL = the conf's en.* */
+  gboolean no_chapters;         /* --no-chapters */
+  char    *sponsorblock_mark;   /* --sponsorblock-mark CATS */
+  char    *sponsorblock_remove; /* --sponsorblock-remove CATS */
+
+  /* How YouTube is reached. Not content, and not chosen per run: these come
+   * from the app's SETTINGS and are stamped onto every run by the runner (see
+   * ytdl_runner_set_connection), so a download, a re-fetch from a video's
+   * page, a bulk re-fetch and a Run again all go out the same way. The form
+   * never writes them and a profile never needs to. */
+  char *cookies_from_browser; /* --cookies-from-browser SPEC */
+  char *cookies_file;         /* --cookies FILE */
+  char *proxy;                /* --proxy URL; may carry user:password@ */
+  char *limit_rate;           /* --limit-rate RATE */
+  char *downloader;           /* --downloader native|aria2c */
+
   GPtrArray *ytdlp_args; /* char*, each emitted as its own --ytdlp-arg */
 } YtdlRunOptions;
 
@@ -103,8 +124,48 @@ GStrv ytdl_run_options_to_args (const YtdlRunOptions *opts);
 
 /* What the equivalent terminal command would be. Shown above the Start button,
  * because a GUI that hides the command it runs makes the CLI harder to learn
- * rather than easier. */
+ * rather than easier.
+ *
+ * The one place it deliberately differs from the real argv: a proxy's
+ * user:password@ is shown as ***@. The preview is on screen, it is stored as
+ * each run's `command` in the history file, and it is the thing somebody
+ * copies into a bug report. */
 char *ytdl_run_options_command_preview (const YtdlRunOptions *opts);
+
+/* socks5://me:secret@host:1080 becomes socks5:// + "***@host:1080" -- the
+ * userinfo replaced by three asterisks. Anything without credentials comes
+ * back unchanged. The same rule ytdl.ps1 and
+ * run_ytdlp.ps1 apply to their own log lines. */
+char *ytdl_redact_proxy (const char *proxy);
+
+/* The connection options only, as ytdl flags: cookies and proxy, plus the
+ * speed limit and downloader unless @for_probe. `ytdl --probe` refuses those
+ * two -- a probe moves no media bytes for them to govern -- and accepts the
+ * other three because they change what yt-dlp can SEE. */
+GStrv ytdl_run_options_connection_args (const YtdlRunOptions *opts,
+                                        gboolean for_probe);
+
+/* Clear the options that cannot apply given the rest of @o, exactly as the
+ * form greys their controls out:
+ *
+ *   a no-media mode (metadata-, comments-, subs-only)  -> fps, no_chapters and
+ *                                                         both SponsorBlock lists
+ *   no_subs                                            -> sub_langs
+ *   sponsorblock_mark                                  -> no_chapters
+ *
+ * This is NOT validation, and it does not duplicate ytdl.ps1's: it never
+ * refuses anything, it only keeps the argv from carrying a value the form is
+ * showing as not applying. The form keeps its own values, so switching the
+ * mode back to Everything brings the frame-rate ceiling back with it -- which
+ * is why this runs on the collected options and not on the widgets. Each
+ * rule mirrors one of ytdl.ps1's refusals, so without it a greyed-out control
+ * would fail the run with an error about an option the user cannot see. */
+void ytdl_run_options_drop_inapplicable (YtdlRunOptions *o);
+
+/* Copy the five connection fields of @conn onto @dst, replacing whatever was
+ * there; NULL clears them. */
+void ytdl_run_options_set_connection (YtdlRunOptions *dst,
+                                      const YtdlRunOptions *conn);
 
 /* Serialise and restore a whole option set.
  *
@@ -188,7 +249,21 @@ void ytdl_runner_start (YtdlRunner *self);
 /* Ask the worker to finish and join it. Safe to call more than once. */
 void ytdl_runner_stop (YtdlRunner *self);
 
-/* Returns the new run id, or NULL with @error set. */
+/* How every run reaches YouTube from now on: only the five connection fields
+ * of @conn are read, and a copy is kept. NULL means none.
+ *
+ * Held by the RUNNER rather than applied by each caller, because there are
+ * five places in this app that enqueue a run -- Add to queue, Run again, the
+ * re-fetch row on a video's page, the bulk re-fetch, and a restored queue --
+ * and a cookie setting that four of them honoured would produce exactly the
+ * run that downloads a members-only video and then fails its re-fetch. */
+void ytdl_runner_set_connection (YtdlRunner *self, const YtdlRunOptions *conn);
+
+/* Returns the new run id, or NULL with @error set.
+ *
+ * The runner's current connection (above) is stamped onto the queued copy,
+ * REPLACING any connection fields @opts carried -- so Run again uses the
+ * proxy you have now, not the one you had when the run first went out. */
 char *ytdl_runner_enqueue (YtdlRunner *self, const YtdlRunOptions *opts,
                            GError **error);
 

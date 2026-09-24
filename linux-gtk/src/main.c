@@ -2421,6 +2421,14 @@ main (int argc, char **argv)
   ytdl_profiles_seed_default ();
 
   app.runner = ytdl_runner_new ();
+  /* Before anything can enqueue, so the very first run -- including a re-fetch
+   * started from a video's page before the Downloads pane is ever opened --
+   * goes out with the saved cookies and proxy. The Downloads pane updates it
+   * whenever the Connection settings change. */
+  {
+    g_autoptr (YtdlRunOptions) conn = ytdl_settings_connection (app.settings);
+    ytdl_runner_set_connection (app.runner, conn);
+  }
 
   /* Loaded before any window exists, because build_main_page hands it
    * straight to the library view. Never fails: a missing or corrupt store

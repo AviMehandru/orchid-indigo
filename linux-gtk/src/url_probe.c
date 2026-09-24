@@ -851,6 +851,7 @@ typedef struct
   gboolean no_pot;
   guint    pot_port;
   GStrv    extra_args;
+  GStrv    connection_args; /* ytdl flags: --cookies*, --proxy */
 } ProbeRequest;
 
 static void
@@ -862,6 +863,7 @@ probe_request_free (gpointer data)
   g_free (r->url);
   g_free (r->items);
   g_strfreev (r->extra_args);
+  g_strfreev (r->connection_args);
   g_free (r);
 }
 
@@ -963,6 +965,9 @@ probe_via_pipeline (ProbeRequest *r, GCancellable *cancellable,
       g_ptr_array_add (argv, g_strdup ("--pot-port"));
       g_ptr_array_add (argv, g_strdup_printf ("%u", r->pot_port));
     }
+  for (gsize i = 0;
+       r->connection_args != NULL && r->connection_args[i] != NULL; i++)
+    g_ptr_array_add (argv, g_strdup (r->connection_args[i]));
   for (gsize i = 0; r->extra_args != NULL && r->extra_args[i] != NULL; i++)
     {
       g_ptr_array_add (argv, g_strdup ("--ytdlp-arg"));
@@ -1015,6 +1020,26 @@ probe_via_ytdlp (ProbeRequest *r, GCancellable *cancellable, GError **error)
   const char *base[] = { "--ignore-config", "--no-progress", "--socket-timeout",
                          "15", "--retries", "2", "--extractor-retries", "2" };
 
+  /* The connection flags are spelled the same in ytdl and in yt-dlp, so they
+   * carry straight over -- with one exception. --cookies FILE is dropped
+   * here: yt-dlp writes its cookie jar back to that path on exit, and the
+   * pipeline's probe is what knows to hand it a private copy instead. A
+   * pipeline too old for --probe is too old for --cookies as well, so the
+   * only thing this fallback could do with the real path is let yt-dlp
+   * rewrite the user's credentials file. The browser source and the proxy
+   * have no such side effect. */
+  g_autoptr (GPtrArray) conn = g_ptr_array_new_with_free_func (g_free);
+  for (gsize i = 0;
+       r->connection_args != NULL && r->connection_args[i] != NULL
+       && r->connection_args[i + 1] != NULL;
+       i += 2)
+    {
+      if (g_strcmp0 (r->connection_args[i], "--cookies") == 0)
+        continue;
+      g_ptr_array_add (conn, g_strdup (r->connection_args[i]));
+      g_ptr_array_add (conn, g_strdup (r->connection_args[i + 1]));
+    }
+
   g_autofree char *item_spec =
       (r->items != NULL && *r->items != '\0') ? g_strdup (r->items)
                                               : g_strdup ("1:501");
@@ -1024,6 +1049,8 @@ probe_via_ytdlp (ProbeRequest *r, GCancellable *cancellable, GError **error)
   g_ptr_array_add (flat_argv, g_strdup ("-J"));
   for (gsize i = 0; i < G_N_ELEMENTS (base); i++)
     g_ptr_array_add (flat_argv, g_strdup (base[i]));
+  for (guint i = 0; i < conn->len; i++)
+    g_ptr_array_add (flat_argv, g_strdup (g_ptr_array_index (conn, i)));
   for (gsize i = 0; r->extra_args != NULL && r->extra_args[i] != NULL; i++)
     g_ptr_array_add (flat_argv, g_strdup (r->extra_args[i]));
   g_ptr_array_add (flat_argv, g_strdup ("--flat-playlist"));
@@ -1086,6 +1113,8 @@ probe_via_ytdlp (ProbeRequest *r, GCancellable *cancellable, GError **error)
   g_ptr_array_add (full_argv, g_strdup ("-J"));
   for (gsize i = 0; i < G_N_ELEMENTS (base); i++)
     g_ptr_array_add (full_argv, g_strdup (base[i]));
+  for (guint i = 0; i < conn->len; i++)
+    g_ptr_array_add (full_argv, g_strdup (g_ptr_array_index (conn, i)));
   for (gsize i = 0; r->extra_args != NULL && r->extra_args[i] != NULL; i++)
     g_ptr_array_add (full_argv, g_strdup (r->extra_args[i]));
   g_ptr_array_add (full_argv, g_strdup ("--no-playlist"));
@@ -1156,6 +1185,7 @@ probe_thread (GTask *task, gpointer source, gpointer task_data,
 void
 ytdl_url_probe_run_async (const char *url, const char *items, gboolean no_pot,
                       guint pot_port, const char *const *extra_args,
+                      const char *const *connection_args,
                       GCancellable *cancellable, GAsyncReadyCallback callback,
                       gpointer user_data)
 {
@@ -1167,6 +1197,7 @@ ytdl_url_probe_run_async (const char *url, const char *items, gboolean no_pot,
   r->no_pot = no_pot;
   r->pot_port = pot_port;
   r->extra_args = g_strdupv ((GStrv) extra_args);
+  r->connection_args = g_strdupv ((GStrv) connection_args);
 
   GTask *task = g_task_new (NULL, cancellable, callback, user_data);
   g_task_set_source_tag (task, ytdl_url_probe_run_async);

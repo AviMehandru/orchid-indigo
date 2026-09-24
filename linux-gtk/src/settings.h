@@ -17,6 +17,8 @@
 
 #include <glib.h>
 
+#include "pipeline.h"
+
 G_BEGIN_DECLS
 
 typedef struct
@@ -40,11 +42,36 @@ typedef struct
    * no visible reason is an app that looks like it lost your videos. */
   char    *sort_key;
   gboolean sort_descending;
+
+  /* How YouTube is reached: the Connection group on the Downloads page.
+   *
+   * Settings, not form fields and not profile fields. A cookie source or a
+   * proxy is a fact about you and your network, not about the video you are
+   * about to download -- so it is kept once, here, and the runner stamps it
+   * onto every run the app starts (ytdl_runner_set_connection). A profile that
+   * carried it would mean switching presets could silently sign you out.
+   *
+   * The cookie SOURCE is stored separately from the two values it chooses
+   * between, so flipping the source to "none" and back does not lose a
+   * browser profile or a file path somebody typed once. */
+  char *cookies_source;  /* NULL / "browser" / "file" */
+  char *cookies_browser; /* "firefox", "chrome", ... */
+  char *cookies_profile; /* optional; appended as :PROFILE */
+  char *cookies_file;
+  char *proxy;
+  char *limit_rate;
+  char *downloader;      /* NULL = native */
 } YtdlSettings;
 
 YtdlSettings *ytdl_settings_load (void);
 void          ytdl_settings_save (const YtdlSettings *s);
 void          ytdl_settings_free (YtdlSettings *s);
+
+/* The connection settings as a YtdlRunOptions with only its five connection
+ * fields set -- the shape ytdl_runner_set_connection and the URL preview take.
+ * The cookie source decides which of browser/file is emitted; a source whose
+ * value is empty emits nothing rather than a flag with no argument. */
+YtdlRunOptions *ytdl_settings_connection (const YtdlSettings *s);
 
 /* The data root as a real path: the configured value with ~ expanded, or the
  * pipeline's own default. Never NULL. */

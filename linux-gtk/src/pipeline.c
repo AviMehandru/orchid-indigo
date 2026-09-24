@@ -52,8 +52,33 @@ ytdl_run_options_free (YtdlRunOptions *o)
   g_free (o->codec);
   g_free (o->audio_codec);
   g_free (o->container);
+  g_free (o->sub_langs);
+  g_free (o->sponsorblock_mark);
+  g_free (o->sponsorblock_remove);
+  g_free (o->cookies_from_browser);
+  g_free (o->cookies_file);
+  g_free (o->proxy);
+  g_free (o->limit_rate);
+  g_free (o->downloader);
   g_clear_pointer (&o->ytdlp_args, g_ptr_array_unref);
   g_free (o);
+}
+
+void
+ytdl_run_options_set_connection (YtdlRunOptions *dst,
+                                 const YtdlRunOptions *conn)
+{
+  g_return_if_fail (dst != NULL);
+  g_free (dst->cookies_from_browser);
+  g_free (dst->cookies_file);
+  g_free (dst->proxy);
+  g_free (dst->limit_rate);
+  g_free (dst->downloader);
+  dst->cookies_from_browser = conn ? g_strdup (conn->cookies_from_browser) : NULL;
+  dst->cookies_file = conn ? g_strdup (conn->cookies_file) : NULL;
+  dst->proxy = conn ? g_strdup (conn->proxy) : NULL;
+  dst->limit_rate = conn ? g_strdup (conn->limit_rate) : NULL;
+  dst->downloader = conn ? g_strdup (conn->downloader) : NULL;
 }
 
 YtdlRunOptions *
@@ -82,6 +107,12 @@ ytdl_run_options_copy (const YtdlRunOptions *s)
   o->no_thumbnail = s->no_thumbnail;
   o->no_metadata = s->no_metadata;
   o->refresh = s->refresh;
+  o->fps = s->fps;
+  o->sub_langs = g_strdup (s->sub_langs);
+  o->no_chapters = s->no_chapters;
+  o->sponsorblock_mark = g_strdup (s->sponsorblock_mark);
+  o->sponsorblock_remove = g_strdup (s->sponsorblock_remove);
+  ytdl_run_options_set_connection (o, s);
   if (s->ytdlp_args != NULL)
     for (guint i = 0; i < s->ytdlp_args->len; i++)
       g_ptr_array_add (o->ytdlp_args,
@@ -202,6 +233,16 @@ ytdl_run_options_to_args (const YtdlRunOptions *o)
   push_non_default (v, "--codec", o->codec, "any");
   push_non_default (v, "--audio-codec", o->audio_codec, "any");
   push_non_default (v, "--container", o->container, "mkv");
+  if (o->fps > 0)
+    {
+      g_ptr_array_add (v, g_strdup ("--fps"));
+      g_ptr_array_add (v, g_strdup_printf ("%u", o->fps));
+    }
+  push_non_default (v, "--sub-langs", o->sub_langs, NULL);
+  if (o->no_chapters)
+    g_ptr_array_add (v, g_strdup ("--no-chapters"));
+  push_non_default (v, "--sponsorblock-mark", o->sponsorblock_mark, NULL);
+  push_non_default (v, "--sponsorblock-remove", o->sponsorblock_remove, NULL);
 
   if (o->no_comments)
     g_ptr_array_add (v, g_strdup ("--no-comments"));
@@ -213,6 +254,15 @@ ytdl_run_options_to_args (const YtdlRunOptions *o)
     g_ptr_array_add (v, g_strdup ("--no-metadata"));
   if (o->refresh)
     g_ptr_array_add (v, g_strdup ("--refresh"));
+
+  /* After the content options and before the passthrough, which keeps its
+   * place at the end: a --ytdlp-arg --proxy typed into the Advanced box
+   * before this existed still reaches yt-dlp after ours and still wins. */
+  {
+    g_auto (GStrv) conn = ytdl_run_options_connection_args (o, FALSE);
+    for (gsize i = 0; conn[i] != NULL; i++)
+      g_ptr_array_add (v, g_strdup (conn[i]));
+  }
 
   /* Repeated rather than joined: ytdl.ps1 takes one value per occurrence, and
    * a real --match-filter expression contains commas and spaces, so no
@@ -232,6 +282,71 @@ ytdl_run_options_to_args (const YtdlRunOptions *o)
   return (GStrv) g_ptr_array_free (v, FALSE);
 }
 
+void
+ytdl_run_options_drop_inapplicable (YtdlRunOptions *o)
+{
+  g_return_if_fail (o != NULL);
+  static const char *const no_media[] = { "metadata-only", "comments-only",
+                                          "subs-only", NULL };
+  if (o->mode != NULL && g_strv_contains (no_media, o->mode))
+    {
+      o->fps = 0;
+      o->no_chapters = FALSE;
+      g_clear_pointer (&o->sponsorblock_mark, g_free);
+      g_clear_pointer (&o->sponsorblock_remove, g_free);
+    }
+  if (o->no_subs)
+    g_clear_pointer (&o->sub_langs, g_free);
+  if (nonempty (o->sponsorblock_mark))
+    o->no_chapters = FALSE;
+}
+
+GStrv
+ytdl_run_options_connection_args (const YtdlRunOptions *o, gboolean for_probe)
+{
+  GPtrArray *v = g_ptr_array_new_with_free_func (g_free);
+  if (o != NULL)
+    {
+      push_non_default (v, "--cookies-from-browser", o->cookies_from_browser,
+                        NULL);
+      /* The file, not a copy: making a private copy per yt-dlp process is the
+       * pipeline's job (yt-dlp writes its jar back to this path on exit), and
+       * it can only do that if it is handed the real path. */
+      push_non_default (v, "--cookies", o->cookies_file, NULL);
+      push_non_default (v, "--proxy", o->proxy, NULL);
+      if (!for_probe)
+        {
+          push_non_default (v, "--limit-rate", o->limit_rate, NULL);
+          push_non_default (v, "--downloader", o->downloader, "native");
+        }
+    }
+  g_ptr_array_add (v, NULL);
+  return (GStrv) g_ptr_array_free (v, FALSE);
+}
+
+char *
+ytdl_redact_proxy (const char *proxy)
+{
+  if (proxy == NULL)
+    return NULL;
+  const char *scheme_end = strstr (proxy, "://");
+  if (scheme_end == NULL)
+    return g_strdup (proxy);
+  const char *authority = scheme_end + 3;
+  /* The userinfo ends at the LAST '@' before the first '/', so a password
+   * that itself contains an unescaped '@' is still hidden whole rather than
+   * half-shown. */
+  const char *slash = strchr (authority, '/');
+  const char *end = slash != NULL ? slash : authority + strlen (authority);
+  const char *at = NULL;
+  for (const char *p = authority; p < end; p++)
+    if (*p == '@')
+      at = p;
+  if (at == NULL)
+    return g_strdup (proxy);
+  return g_strdup_printf ("%.*s***%s", (int) (authority - proxy), proxy, at);
+}
+
 char *
 ytdl_run_options_command_preview (const YtdlRunOptions *o)
 {
@@ -239,11 +354,15 @@ ytdl_run_options_command_preview (const YtdlRunOptions *o)
   GString *s = g_string_new ("ytdl");
   for (gsize i = 0; args[i] != NULL; i++)
     {
+      g_autofree char *shown =
+          (i > 0 && g_strcmp0 (args[i - 1], "--proxy") == 0)
+              ? ytdl_redact_proxy (args[i])
+              : g_strdup (args[i]);
       g_string_append_c (s, ' ');
-      if (i == 0 || strchr (args[i], ' ') != NULL)
-        g_string_append_printf (s, "\"%s\"", args[i]);
+      if (i == 0 || strchr (shown, ' ') != NULL)
+        g_string_append_printf (s, "\"%s\"", shown);
       else
-        g_string_append (s, args[i]);
+        g_string_append (s, shown);
     }
   return g_string_free (s, FALSE);
 }
@@ -571,6 +690,9 @@ struct _YtdlRunner
   GAsyncQueue *lines; /* LineEvent*, worker -> main */
   guint        drain_id;
   guint        counter;
+
+  /* Only the five connection fields are meaningful. Guarded by @lock. */
+  YtdlRunOptions *connection;
 };
 
 enum
@@ -642,6 +764,22 @@ ytdl_run_options_build_json (JsonBuilder *b, const YtdlRunOptions *o)
   B ("no_thumbnail", o->no_thumbnail);
   B ("no_metadata", o->no_metadata);
   B ("refresh", o->refresh);
+  json_builder_set_member_name (b, "fps");
+  json_builder_add_int_value (b, o->fps);
+  S ("sub_langs", o->sub_langs);
+  B ("no_chapters", o->no_chapters);
+  S ("sponsorblock_mark", o->sponsorblock_mark);
+  S ("sponsorblock_remove", o->sponsorblock_remove);
+  /* The connection fields are written too, so a queue restored after a
+   * restart runs the way it was queued. That puts a proxy password, if the
+   * proxy has one, into queue.json and history.json in the state directory
+   * -- beside settings.json, which holds it already. The `command` string
+   * stored alongside is the redacted preview. */
+  S ("cookies_from_browser", o->cookies_from_browser);
+  S ("cookies_file", o->cookies_file);
+  S ("proxy", o->proxy);
+  S ("limit_rate", o->limit_rate);
+  S ("downloader", o->downloader);
 #undef S
 #undef B
 
@@ -708,6 +846,17 @@ ytdl_run_options_from_json (JsonObject *obj)
   GB ("no_thumbnail", o->no_thumbnail);
   GB ("no_metadata", o->no_metadata);
   GB ("refresh", o->refresh);
+  if (json_object_has_member (obj, "fps"))
+    o->fps = (guint) json_object_get_int_member (obj, "fps");
+  GS ("sub_langs", o->sub_langs);
+  GB ("no_chapters", o->no_chapters);
+  GS ("sponsorblock_mark", o->sponsorblock_mark);
+  GS ("sponsorblock_remove", o->sponsorblock_remove);
+  GS ("cookies_from_browser", o->cookies_from_browser);
+  GS ("cookies_file", o->cookies_file);
+  GS ("proxy", o->proxy);
+  GS ("limit_rate", o->limit_rate);
+  GS ("downloader", o->downloader);
 #undef GS
 #undef GB
 
@@ -834,8 +983,11 @@ write_records_atomic (const char *path, GPtrArray *records)
   g_autofree char *dir = g_path_get_dirname (path);
   g_mkdir_with_parents (dir, 0755);
 
+  /* 0600: a run's options now include its proxy, which can carry a
+   * password. Same mode, same reason, as settings.json. */
   g_autofree char *tmp = g_strconcat (path, ".tmp", NULL);
-  if (g_file_set_contents (tmp, text, -1, NULL))
+  if (g_file_set_contents_full (tmp, text, -1, G_FILE_SET_CONTENTS_CONSISTENT,
+                                0600, NULL))
     {
       if (g_rename (tmp, path) != 0)
         g_unlink (tmp);
@@ -1237,6 +1389,9 @@ ytdl_runner_enqueue (YtdlRunner *self, const YtdlRunOptions *opts,
 
   YtdlRunRecord *rec = g_new0 (YtdlRunRecord, 1);
   rec->opts = ytdl_run_options_copy (opts);
+  g_mutex_lock (&self->lock);
+  ytdl_run_options_set_connection (rec->opts, self->connection);
+  g_mutex_unlock (&self->lock);
   rec->command = ytdl_run_options_command_preview (rec->opts);
   rec->state = g_strdup ("queued");
   rec->videos_touched = -1;
@@ -1258,6 +1413,23 @@ ytdl_runner_enqueue (YtdlRunner *self, const YtdlRunOptions *opts,
   mark_state_dirty (self);
 
   return g_strdup (rec->id);
+}
+
+void
+ytdl_runner_set_connection (YtdlRunner *self, const YtdlRunOptions *conn)
+{
+  g_return_if_fail (YTDL_IS_RUNNER (self));
+  YtdlRunOptions *next = NULL;
+  if (conn != NULL)
+    {
+      next = ytdl_run_options_new ();
+      ytdl_run_options_set_connection (next, conn);
+    }
+  g_mutex_lock (&self->lock);
+  YtdlRunOptions *prev = self->connection;
+  self->connection = next;
+  g_mutex_unlock (&self->lock);
+  ytdl_run_options_free (prev);
 }
 
 gboolean
@@ -1421,6 +1593,7 @@ ytdl_runner_finalize (GObject *object)
   g_clear_pointer (&self->history, g_ptr_array_unref);
   g_clear_pointer (&self->current, ytdl_run_record_free);
   g_clear_pointer (&self->log, g_ptr_array_unref);
+  g_clear_pointer (&self->connection, ytdl_run_options_free);
   ytdl_progress_clear (&self->progress);
   if (self->lines != NULL)
     g_async_queue_unref (self->lines);

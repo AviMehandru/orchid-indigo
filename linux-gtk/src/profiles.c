@@ -259,6 +259,11 @@ ytdl_profiles_save (YtdlProfileStore *store, const char *name,
 
   YtdlRunOptions *copy = ytdl_run_options_copy (opts);
   g_clear_pointer (&copy->url, g_free);
+  /* Nor the connection. It is a setting, stamped onto every run by the
+   * runner, and a profile that carried a copy would bring back a proxy or a
+   * cookie source the user has since changed -- and would put a proxy
+   * password into profiles.json for no reason. */
+  ytdl_run_options_set_connection (copy, NULL);
 
   gssize i = position_of (store, clean);
   if (i >= 0)

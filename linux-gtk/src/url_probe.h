@@ -214,13 +214,16 @@ GArray *ytdl_url_probe_parse_items_range (const char *spec);
  * video id works here exactly as it does in the URL field). @items may be
  * NULL. @no_pot and @pot_port mirror the form's own controls, because both
  * change which formats yt-dlp can see. @extra_args is the Advanced box, one
- * argument per element, so a URL that needs --cookies-from-browser can be
- * probed at all.
+ * argument per element. @connection_args is the Connection settings as ytdl
+ * flags -- ytdl_run_options_connection_args (conn, TRUE), so cookies and
+ * proxy only -- because a preview taken signed out, or not through the
+ * proxy, describes a different video from the one the download will get.
  *
  * Finish with ytdl_url_probe_run_finish(). The callback runs on the thread that
  * started the operation, which for this app is always the main one. */
 void ytdl_url_probe_run_async (const char *url, const char *items, gboolean no_pot,
                            guint pot_port, const char *const *extra_args,
+                           const char *const *connection_args,
                            GCancellable *cancellable,
                            GAsyncReadyCallback callback, gpointer user_data);
 

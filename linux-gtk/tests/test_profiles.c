@@ -11,7 +11,11 @@
  * nothing, and THE URL IS NEVER STORED.
  */
 
+#include "pipeline.h"
 #include "profiles.h"
+#include "settings.h"
+
+#include <sys/stat.h>
 
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -411,6 +415,141 @@ test_a_corrupt_store_is_not_replaced_by_the_default (Fixture *fx,
   g_assert_cmpstr (after, ==, "{ not json");
 }
 
+/* ---------------------------------------------------------------------- */
+/* The Connection settings                                                */
+/* ---------------------------------------------------------------------- */
+
+/* A profile is a preset for WHAT to download. A cookie source or a proxy is
+ * a setting about how you reach YouTube, stamped onto every run by the
+ * runner; a profile carrying one would bring back a proxy you have since
+ * changed, and would put its password into profiles.json. */
+static void
+test_profiles_never_store_the_connection (Fixture *fx, gconstpointer unused)
+{
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->mode = g_strdup ("audio-only");
+  o->sponsorblock_mark = g_strdup ("all");
+  o->proxy = g_strdup ("socks5://u:secret@h:1");
+  o->cookies_from_browser = g_strdup ("firefox");
+  o->limit_rate = g_strdup ("1M");
+
+  YtdlProfileStore *store = ytdl_profiles_load ();
+  g_assert_true (ytdl_profiles_save (store, "P", o, NULL));
+  ytdl_profile_store_free (store);
+
+  g_autofree char *path =
+      g_build_filename (fx->dir, "ytdl-gtk", "profiles.json", NULL);
+  g_autofree char *text = NULL;
+  g_assert_true (g_file_get_contents (path, &text, NULL, NULL));
+  g_assert_null (strstr (text, "secret"));
+  g_assert_null (strstr (text, "firefox"));
+  /* The content options of the new set ARE part of a profile. */
+  g_assert_nonnull (strstr (text, "sponsorblock_mark"));
+
+  store = ytdl_profiles_load ();
+  const YtdlProfile *p = ytdl_profiles_get (store, "P");
+  g_assert_nonnull (p);
+  g_assert_null (p->opts->proxy);
+  g_assert_null (p->opts->cookies_from_browser);
+  g_assert_null (p->opts->limit_rate);
+  g_assert_cmpstr (p->opts->sponsorblock_mark, ==, "all");
+  ytdl_profile_store_free (store);
+}
+
+static void
+test_settings_connection_round_trips_and_resolves (Fixture *fx,
+                                                   gconstpointer unused)
+{
+  YtdlSettings *s = ytdl_settings_load ();
+  s->cookies_source = g_strdup ("browser");
+  s->cookies_browser = g_strdup ("chrome");
+  s->cookies_profile = g_strdup ("Profile 1");
+  s->cookies_file = g_strdup ("~/cookies.txt"); /* kept, but not the source */
+  s->proxy = g_strdup ("  http://u:pw@p:3128  ");
+  s->limit_rate = g_strdup ("2M");
+  s->downloader = g_strdup ("native");
+  ytdl_settings_save (s);
+  ytdl_settings_free (s);
+
+  /* settings.json can hold a proxy password now, so it is owner-only. */
+  g_autofree char *path =
+      g_build_filename (fx->dir, "ytdl-gtk", "settings.json", NULL);
+  struct stat st;
+  g_assert_cmpint (g_stat (path, &st), ==, 0);
+  g_assert_cmpint (st.st_mode & 0777, ==, 0600);
+
+  s = ytdl_settings_load ();
+  g_autoptr (YtdlRunOptions) c = ytdl_settings_connection (s);
+  g_assert_cmpstr (c->cookies_from_browser, ==, "chrome:Profile 1");
+  g_assert_null (c->cookies_file);
+  g_assert_cmpstr (c->proxy, ==, "http://u:pw@p:3128");
+  g_assert_cmpstr (c->limit_rate, ==, "2M");
+  /* "native" is the pipeline's own default and is not sent. */
+  g_assert_null (c->downloader);
+
+  /* Switching the source keeps the other value and uses it. */
+  g_free (s->cookies_source);
+  s->cookies_source = g_strdup ("file");
+  g_autoptr (YtdlRunOptions) f = ytdl_settings_connection (s);
+  g_assert_null (f->cookies_from_browser);
+  g_assert_nonnull (f->cookies_file);
+  g_assert_true (g_path_is_absolute (f->cookies_file));
+  g_assert_true (g_str_has_suffix (f->cookies_file, "/cookies.txt"));
+
+  /* A source with nothing chosen emits nothing, not a flag with no value. */
+  g_free (s->cookies_file);
+  s->cookies_file = NULL;
+  g_autoptr (YtdlRunOptions) e = ytdl_settings_connection (s);
+  g_assert_null (e->cookies_file);
+  ytdl_settings_free (s);
+}
+
+/* The runner, not each caller, applies the connection -- so Add to queue,
+ * Run again, both re-fetch paths and a restored queue cannot disagree. Run
+ * again must use the proxy you have NOW. */
+static void
+test_runner_stamps_the_current_connection (Fixture *fx, gconstpointer unused)
+{
+  g_autoptr (YtdlRunner) runner = ytdl_runner_new ();
+
+  g_autoptr (YtdlRunOptions) conn = ytdl_run_options_new ();
+  conn->proxy = g_strdup ("http://u:pw@new:1");
+  conn->cookies_from_browser = g_strdup ("firefox");
+  ytdl_runner_set_connection (runner, conn);
+
+  g_autoptr (YtdlRunOptions) o = ytdl_run_options_new ();
+  o->url = g_strdup ("https://youtu.be/abcdefghijk");
+  o->mode = g_strdup ("comments-only");
+  o->refresh = TRUE;
+  o->proxy = g_strdup ("http://old:1"); /* e.g. a history record's */
+  g_autofree char *id = ytdl_runner_enqueue (runner, o, NULL);
+  g_assert_nonnull (id);
+
+  g_autoptr (GPtrArray) q = ytdl_runner_queue (runner);
+  g_assert_cmpuint (q->len, ==, 1);
+  YtdlRunRecord *r = g_ptr_array_index (q, 0);
+  g_assert_cmpstr (r->opts->proxy, ==, "http://u:pw@new:1");
+  g_assert_cmpstr (r->opts->cookies_from_browser, ==, "firefox");
+  /* The stored command is the masked preview. */
+  g_assert_null (strstr (r->command, "pw@"));
+  g_assert_nonnull (strstr (r->command, "--cookies-from-browser firefox"));
+
+  /* Cleared: the next run goes out with no connection options at all. */
+  ytdl_runner_set_connection (runner, NULL);
+  g_autofree char *id2 = ytdl_runner_enqueue (runner, o, NULL);
+  g_autoptr (GPtrArray) q2 = ytdl_runner_queue (runner);
+  YtdlRunRecord *r2 = g_ptr_array_index (q2, 1);
+  g_assert_null (r2->opts->proxy);
+
+  /* queue.json holds the proxy (a restored queue must run as queued), so it
+   * is owner-only like settings.json. */
+  g_autofree char *qpath =
+      g_build_filename (fx->dir, "ytdl-gtk", "queue.json", NULL);
+  struct stat st;
+  if (g_stat (qpath, &st) == 0)
+    g_assert_cmpint (st.st_mode & 0777, ==, 0600);
+}
+
 void
 ytdl_register_profile_tests (void)
 {
@@ -438,5 +577,11 @@ ytdl_register_profile_tests (void)
        test_seeding_never_touches_an_existing_store);
   FIX ("/profiles/seed-leaves-corrupt-store-alone",
        test_a_corrupt_store_is_not_replaced_by_the_default);
+  FIX ("/profiles/never-store-the-connection",
+       test_profiles_never_store_the_connection);
+  FIX ("/settings/connection-round-trips-and-resolves",
+       test_settings_connection_round_trips_and_resolves);
+  FIX ("/runner/stamps-the-current-connection",
+       test_runner_stamps_the_current_connection);
 #undef FIX
 }

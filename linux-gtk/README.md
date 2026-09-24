@@ -105,6 +105,17 @@ merge could produce it — and a playlist comes back as a tick list that writes
 back to reading `yt-dlp -J` itself and says so, because the fallback cannot
 use the PO token provider and its format table may be the thinner one.
 
+The options other yt-dlp frontends expose as controls are controls here too,
+each mapping to one `ytdl` option and validated by `ytdl.ps1` rather than
+here: a frame-rate ceiling, subtitle languages, chapter embedding and
+SponsorBlock (mark or cut) in the form and in profiles; and a **Connection**
+group — cookies from a browser or a cookies.txt, proxy, speed limit,
+aria2c — kept as settings rather than per run, and stamped by the runner onto
+every run the app starts, re-fetches and Run again included, and onto the
+preview. A proxy password is masked in the command preview and the stored
+history. While runs are waiting, the queue says that it is sequential on
+purpose and points at Workers. Needs `0003-orchid-ochre` or later.
+
 **Health** — the seven dependencies probed in parallel with versions and an
 8-second ceiling each, which pipeline files are actually installed (not what
 is in a checkout), `CONFIG_VERSION`, archive counts, the archive root actually

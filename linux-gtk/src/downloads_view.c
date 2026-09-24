@@ -63,6 +63,31 @@ struct _YtdlDownloadsView
   GtkWidget *no_comments_cb, *no_subs_cb, *no_thumbnail_cb, *no_metadata_cb;
   GtkWidget *extra_args;
 
+  /* The options that used to be reachable only by typing yt-dlp's spelling
+   * into the Advanced box. Per run, and saved in a profile like the rest of
+   * the form. */
+  GtkWidget *fps;
+  GtkWidget *sub_langs;
+  GtkWidget *chapters_cb; /* ON means embed -- the inverse of --no-chapters */
+  GtkWidget *sponsor_mode;
+  GtkWidget *sponsor_cats;
+
+  /* The Connection group. NOT per run and NOT in a profile: these are
+   * settings, written to settings.json as they change and handed to the
+   * runner, which stamps them onto every run the app starts. See settings.h
+   * for why. */
+  GtkWidget *cookies_source;
+  GtkWidget *cookies_browser;
+  GtkWidget *cookies_profile;
+  GtkWidget *cookies_file;
+  GtkWidget *proxy;
+  GtkWidget *limit_rate;
+  GtkWidget *downloader;
+  gboolean   loading_connection; /* suppresses the save while filling */
+
+  /* One sentence under the Queue heading. See update_queue_note. */
+  GtkWidget *queue_note;
+
   GtkWidget *start, *cancel, *pause;
   GtkWidget *progress;
   GtkWidget *stage;
@@ -205,6 +230,35 @@ collect (YtdlDownloadsView *self)
   o->no_metadata =
       adw_switch_row_get_active (ADW_SWITCH_ROW (self->no_metadata_cb));
 
+  o->fps = (guint) g_ascii_strtoull (combo_value (self->fps), NULL, 10);
+  {
+    g_autofree char *langs =
+        g_strstrip (g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->sub_langs))));
+    if (*langs != '\0')
+      o->sub_langs = g_steal_pointer (&langs);
+  }
+  o->no_chapters =
+      !adw_switch_row_get_active (ADW_SWITCH_ROW (self->chapters_cb));
+  {
+    const char *how = combo_value (self->sponsor_mode);
+    g_autofree char *cats = g_strstrip (
+        g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->sponsor_cats))));
+    /* An empty category list with a mode chosen is sent as "sponsor" rather
+     * than dropped: the mode row says SponsorBlock is on, and a run that
+     * quietly did nothing about it would contradict the form. "sponsor" is
+     * the category the field is pre-filled with, so this is only ever the
+     * user clearing the field and forgetting to type another. */
+    if (*cats == '\0')
+      {
+        g_free (cats);
+        cats = g_strdup ("sponsor");
+      }
+    if (g_strcmp0 (how, "mark") == 0)
+      o->sponsorblock_mark = g_steal_pointer (&cats);
+    else if (g_strcmp0 (how, "remove") == 0)
+      o->sponsorblock_remove = g_steal_pointer (&cats);
+  }
+
   /* One --ytdlp-arg per line, because a real --match-filter expression
    * contains commas and spaces and there is no separator that would be safe
    * to split a single-line field on. */
@@ -219,13 +273,53 @@ collect (YtdlDownloadsView *self)
             g_ptr_array_add (o->ytdlp_args, g_strdup (parts[i]));
         }
     }
+
+  /* Whatever the form is showing greyed out stays out of the command line.
+   * See the header comment on this function for why it is not validation. */
+  ytdl_run_options_drop_inapplicable (o);
   return o;
+}
+
+/* Grey out what cannot apply, mirroring ytdl_run_options_drop_inapplicable
+ * rule for rule -- the one decides what the user SEES, the other what is
+ * SENT, and the two must never disagree. Insensitive rather than hidden, so
+ * the value is still visible and comes back when the mode does. */
+static void
+update_sensitivity (YtdlDownloadsView *self)
+{
+  static const char *const no_media[] = { "metadata-only", "comments-only",
+                                          "subs-only", NULL };
+  /* Every control this touches is built after the Format group whose
+   * notify::selected brings us here; a notification during construction must
+   * not reach a widget that does not exist yet. */
+  if (self->fps == NULL || self->sponsor_mode == NULL
+      || self->sponsor_cats == NULL || self->sub_langs == NULL)
+    return;
+
+  gboolean media = !g_strv_contains (no_media, combo_value (self->mode));
+  gboolean marking = g_strcmp0 (combo_value (self->sponsor_mode), "mark") == 0;
+  gboolean sponsoring = g_strcmp0 (combo_value (self->sponsor_mode), "off") != 0;
+
+  gtk_widget_set_sensitive (self->fps, media);
+  gtk_widget_set_sensitive (self->sponsor_mode, media);
+  gtk_widget_set_sensitive (self->sponsor_cats, media && sponsoring);
+  gtk_widget_set_sensitive (self->chapters_cb, media && !marking);
+  gtk_widget_set_sensitive (
+      self->sub_langs,
+      !adw_switch_row_get_active (ADW_SWITCH_ROW (self->no_subs_cb)));
 }
 
 static void
 refresh_preview (YtdlDownloadsView *self)
 {
   g_autoptr (YtdlRunOptions) o = collect (self);
+  {
+    /* The runner stamps the Connection settings onto every run at enqueue,
+     * so the preview has to show them too or it would not be the command
+     * that runs. The proxy's password is masked by the preview itself. */
+    g_autoptr (YtdlRunOptions) conn = ytdl_settings_connection (self->settings);
+    ytdl_run_options_set_connection (o, conn);
+  }
 
   /* With no URL typed, the preview would read ytdl "" -- which looks like a
    * bug rather than an empty field, and is what it showed right after a queue
@@ -249,6 +343,7 @@ refresh_preview (YtdlDownloadsView *self)
 static void
 on_form_changed (GtkWidget *w, gpointer user_data)
 {
+  update_sensitivity (user_data);
   refresh_preview (user_data);
 }
 
@@ -269,6 +364,7 @@ on_notify_changed (GObject *obj, GParamSpec *pspec, gpointer user_data)
       && obj == G_OBJECT (self->codec))
     rebuild_quality_for_codec (self);
 
+  update_sensitivity (self);
   refresh_preview (self);
 }
 
@@ -968,11 +1064,16 @@ on_probe_clicked (GtkButton *btn, gpointer user_data)
   gtk_widget_set_sensitive (self->probe_button, TRUE);
   set_probe_status (self, "Reading the URL…", FALSE);
 
+  /* Cookies and proxy only: `ytdl --probe` refuses the speed limit and the
+   * downloader, which govern moving media bytes and a probe moves none. */
+  g_autoptr (YtdlRunOptions) conn = ytdl_settings_connection (self->settings);
+  g_auto (GStrv) conn_args = ytdl_run_options_connection_args (conn, TRUE);
+
   ytdl_url_probe_run_async (
       url, gtk_editable_get_text (GTK_EDITABLE (self->items)),
       adw_switch_row_get_active (ADW_SWITCH_ROW (self->no_pot_cb)), 0,
-      (const char *const *) extra, self->probe_cancel, on_probe_done,
-      g_object_ref (self));
+      (const char *const *) extra, (const char *const *) conn_args,
+      self->probe_cancel, on_probe_done, g_object_ref (self));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1221,6 +1322,24 @@ on_state_changed (YtdlRunner *runner, gpointer user_data)
   g_autofree char *qt =
       g_strdup_printf ("Queue (%u)", queue->len);
   gtk_label_set_text (GTK_LABEL (self->queue_title), qt);
+
+  /* The queue is sequential by design (see pipeline.h), and it is correct --
+   * but thirty runs from a bulk re-fetch executing one at a time look like a
+   * stuck app next to a competitor running eight at once, unless something
+   * on screen says the wait is deliberate and where the real parallelism
+   * lives. Shown only while something is actually waiting, which is the only
+   * time the question arises. */
+  if (queue->len > 0)
+    {
+      g_autofree char *note = g_strdup_printf (
+          "%u waiting. Runs go one at a time on purpose: two ytdl runs at "
+          "once would race on the archive's shared manifests. To download "
+          "several videos of one playlist or channel at the same time, raise "
+          "Workers before adding it.",
+          queue->len);
+      gtk_label_set_text (GTK_LABEL (self->queue_note), note);
+    }
+  gtk_widget_set_visible (self->queue_note, queue->len > 0);
   g_autofree char *ht = g_strdup_printf ("History (%u)", history->len);
   gtk_label_set_text (GTK_LABEL (self->history_title), ht);
 
@@ -1301,6 +1420,33 @@ apply_profile_options (YtdlDownloadsView *self, const YtdlRunOptions *o)
   adw_switch_row_set_active (ADW_SWITCH_ROW (self->no_metadata_cb),
                              o->no_metadata);
 
+  {
+    g_autofree char *fps = g_strdup_printf ("%u", o->fps);
+    combo_set_value (self->fps, o->fps > 0 ? fps : "0");
+  }
+  gtk_editable_set_text (GTK_EDITABLE (self->sub_langs),
+                         o->sub_langs != NULL ? o->sub_langs : "");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (self->chapters_cb),
+                             !o->no_chapters);
+  /* A profile written before these existed has neither list, which reads as
+   * SponsorBlock off -- the behaviour that profile always had. The category
+   * field keeps whatever it held, so turning the mode back on does not make
+   * somebody retype a list. */
+  if (o->sponsorblock_remove != NULL && *o->sponsorblock_remove != '\0')
+    {
+      combo_set_value (self->sponsor_mode, "remove");
+      gtk_editable_set_text (GTK_EDITABLE (self->sponsor_cats),
+                             o->sponsorblock_remove);
+    }
+  else if (o->sponsorblock_mark != NULL && *o->sponsorblock_mark != '\0')
+    {
+      combo_set_value (self->sponsor_mode, "mark");
+      gtk_editable_set_text (GTK_EDITABLE (self->sponsor_cats),
+                             o->sponsorblock_mark);
+    }
+  else
+    combo_set_value (self->sponsor_mode, "off");
+
   /* The destination is part of the profile, but an empty one must not wipe a
    * destination the user has set for this session. */
   if (o->data_root != NULL && *o->data_root != '\0')
@@ -1325,6 +1471,7 @@ apply_profile_options (YtdlDownloadsView *self, const YtdlRunOptions *o)
   g_string_free (extra, TRUE);
 
   self->applying = FALSE;
+  update_sensitivity (self);
   refresh_preview (self);
 }
 
@@ -1688,6 +1835,120 @@ on_dest_changed (GtkEditable *editable, gpointer user_data)
   g_free (self->settings->data_root);
   self->settings->data_root = g_strdup (gtk_editable_get_text (editable));
   refresh_preview (self);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Connection settings                                                    */
+/* ---------------------------------------------------------------------- */
+
+static void
+update_connection_visibility (YtdlDownloadsView *self)
+{
+  const char *src = combo_value (self->cookies_source);
+  gboolean browser = g_strcmp0 (src, "browser") == 0;
+  gtk_widget_set_visible (self->cookies_browser, browser);
+  gtk_widget_set_visible (self->cookies_profile, browser);
+  gtk_widget_set_visible (self->cookies_file, g_strcmp0 (src, "file") == 0);
+}
+
+static void
+replace_text (char **slot, const char *value)
+{
+  g_free (*slot);
+  *slot = (value != NULL && *value != '\0') ? g_strdup (value) : NULL;
+}
+
+/* Every change is written straight to settings.json and handed straight to the
+ * runner. Written per change rather than on exit because nothing else in this
+ * app saves settings on the way out, and a proxy that was typed, used for a
+ * run, and then forgotten on the next launch would be a setting that does not
+ * behave like one. The file is a few hundred bytes. */
+static void
+on_connection_changed (YtdlDownloadsView *self)
+{
+  if (self->loading_connection)
+    return;
+  YtdlSettings *st = self->settings;
+
+  const char *src = combo_value (self->cookies_source);
+  replace_text (&st->cookies_source, g_strcmp0 (src, "none") == 0 ? NULL : src);
+  replace_text (&st->cookies_browser, combo_value (self->cookies_browser));
+  replace_text (&st->cookies_profile,
+                gtk_editable_get_text (GTK_EDITABLE (self->cookies_profile)));
+  replace_text (&st->cookies_file,
+                gtk_editable_get_text (GTK_EDITABLE (self->cookies_file)));
+  replace_text (&st->proxy, gtk_editable_get_text (GTK_EDITABLE (self->proxy)));
+  replace_text (&st->limit_rate,
+                gtk_editable_get_text (GTK_EDITABLE (self->limit_rate)));
+  const char *dl = combo_value (self->downloader);
+  replace_text (&st->downloader, g_strcmp0 (dl, "native") == 0 ? NULL : dl);
+
+  ytdl_settings_save (st);
+  g_autoptr (YtdlRunOptions) conn = ytdl_settings_connection (st);
+  ytdl_runner_set_connection (self->runner, conn);
+
+  update_connection_visibility (self);
+  refresh_preview (self);
+}
+
+static void
+on_connection_notify (GObject *obj, GParamSpec *pspec, gpointer user_data)
+{
+  on_connection_changed (user_data);
+}
+
+static void
+on_connection_edited (GtkEditable *editable, gpointer user_data)
+{
+  on_connection_changed (user_data);
+}
+
+static void
+load_connection (YtdlDownloadsView *self)
+{
+  const YtdlSettings *st = self->settings;
+  self->loading_connection = TRUE;
+  combo_set_value (self->cookies_source,
+                   st->cookies_source != NULL ? st->cookies_source : "none");
+  if (st->cookies_browser != NULL)
+    combo_set_value (self->cookies_browser, st->cookies_browser);
+  gtk_editable_set_text (GTK_EDITABLE (self->cookies_profile),
+                         st->cookies_profile != NULL ? st->cookies_profile : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->cookies_file),
+                         st->cookies_file != NULL ? st->cookies_file : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->proxy),
+                         st->proxy != NULL ? st->proxy : "");
+  gtk_editable_set_text (GTK_EDITABLE (self->limit_rate),
+                         st->limit_rate != NULL ? st->limit_rate : "");
+  combo_set_value (self->downloader,
+                   st->downloader != NULL ? st->downloader : "native");
+  self->loading_connection = FALSE;
+  update_connection_visibility (self);
+}
+
+static void
+on_cookie_file_chosen (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  g_autoptr (GFile) file =
+      gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source), res, NULL);
+  if (file == NULL)
+    return; /* dismissed */
+  g_autofree char *path = g_file_get_path (file);
+  if (path != NULL)
+    gtk_editable_set_text (GTK_EDITABLE (self->cookies_file), path);
+}
+
+static void
+on_cookie_browse (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  GtkFileDialog *dlg = gtk_file_dialog_new ();
+  gtk_file_dialog_set_title (dlg, "Choose a cookies.txt file");
+  GtkWidget *root = GTK_WIDGET (gtk_widget_get_root (GTK_WIDGET (self)));
+  gtk_file_dialog_open (dlg, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                        NULL, on_cookie_file_chosen, self);
+  g_object_unref (dlg);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -2105,6 +2366,21 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
                              self->audio_codec);
   adw_preferences_group_add (ADW_PREFERENCES_GROUP (fgroup), self->container);
 
+  /* Frame rate as a CEILING, the same shape as Quality: ytdl --fps is a
+   * predicate with a fallback, never a filter that fails a download. Three
+   * values, because a ceiling of 60 already admits 50 and one of 30 already
+   * admits 25 and 24 -- there is nothing a finer list could express. */
+  static const char *const fps_ids[] = { "0", "60", "30", NULL };
+  static const char *const fps_labels[] = { "Any", "≤ 60 fps", "≤ 30 fps",
+                                            NULL };
+  self->fps = make_combo (
+      fps_ids, fps_labels, "Frame rate",
+      "A ceiling, like Quality. On a 60 fps upload, ≤ 30 can mean 480p.",
+      "0");
+  g_signal_connect (self->fps, "notify::selected",
+                    G_CALLBACK (on_notify_changed), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (fgroup), self->fps);
+
   self->workers = adw_spin_row_new_with_range (1, 16, 1);
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->workers),
                                  "Workers");
@@ -2164,6 +2440,156 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   SWITCH (no_metadata_cb, "Skip metadata", "Do not run the metadata pass.");
 #undef SWITCH
   gtk_box_append (GTK_BOX (form), sgroup);
+  /* Subtitle languages mean nothing when subtitles are skipped. */
+  g_signal_connect (self->no_subs_cb, "notify::active",
+                    G_CALLBACK (on_notify_changed), self);
+
+  /* --- Subtitles, chapters, SponsorBlock ----------------------------- */
+  GtkWidget *xgroup = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (xgroup),
+                                   "Subtitles, chapters and SponsorBlock");
+
+  /* A free-text list rather than a picker, because yt-dlp's own syntax is
+   * the thing worth exposing -- regexes ("en.*"), exclusions ("-live_chat")
+   * and "all" -- and a picker would need a language list this app cannot
+   * know until a probe has run. The Preview group says which languages a
+   * probed video actually has. */
+  self->sub_langs = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->sub_langs),
+      "Subtitle languages — empty means English (en.*); e.g. en.*,de,-live_chat");
+  g_signal_connect (self->sub_langs, "changed", G_CALLBACK (on_form_changed),
+                    self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (xgroup), self->sub_langs);
+
+  self->chapters_cb = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->chapters_cb),
+                                 "Embed chapters");
+  adw_action_row_set_subtitle (
+      ADW_ACTION_ROW (self->chapters_cb),
+      "Chapter markers inside the media file. They are kept in the info.json "
+      "either way.");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (self->chapters_cb), TRUE);
+  g_signal_connect (self->chapters_cb, "notify::active",
+                    G_CALLBACK (on_notify_changed), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (xgroup), self->chapters_cb);
+
+  static const char *const sb_ids[] = { "off", "mark", "remove", NULL };
+  static const char *const sb_labels[] = { "Off", "Mark as chapters",
+                                           "Cut out of the file", NULL };
+  self->sponsor_mode = make_combo (
+      sb_ids, sb_labels, "SponsorBlock",
+      "Cutting changes the archived file: it is no longer the one YouTube "
+      "served. The uncut streams stay in Pre-merge streams, and the manifest "
+      "records the cut.",
+      "off");
+  g_signal_connect (self->sponsor_mode, "notify::selected",
+                    G_CALLBACK (on_notify_changed), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (xgroup),
+                             self->sponsor_mode);
+
+  self->sponsor_cats = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->sponsor_cats),
+      "SponsorBlock categories — e.g. sponsor,selfpromo,intro or all");
+  gtk_editable_set_text (GTK_EDITABLE (self->sponsor_cats), "sponsor");
+  g_signal_connect (self->sponsor_cats, "changed",
+                    G_CALLBACK (on_form_changed), self);
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (xgroup),
+                             self->sponsor_cats);
+  gtk_box_append (GTK_BOX (form), xgroup);
+
+  /* --- Connection ---------------------------------------------------- */
+  GtkWidget *cgroup = adw_preferences_group_new ();
+  adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (cgroup),
+                                   "Connection");
+  adw_preferences_group_set_description (
+      ADW_PREFERENCES_GROUP (cgroup),
+      "Saved as you change it, and used by every run this app starts — "
+      "downloads, previews and re-fetches alike. Not part of a profile.");
+
+  static const char *const cs_ids[] = { "none", "browser", "file", NULL };
+  static const char *const cs_labels[] = { "None", "From a browser",
+                                           "From a cookies.txt file", NULL };
+  self->cookies_source = make_combo (
+      cs_ids, cs_labels, "Cookies",
+      "For members-only, age-restricted and private videos, and YouTube "
+      "Premium's higher bitrate.",
+      "none");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup),
+                             self->cookies_source);
+
+  /* No Safari: yt-dlp reads it on macOS only, and this is the Linux app. */
+  static const char *const br_ids[] = { "firefox", "chrome", "chromium",
+                                        "brave",   "edge",   "opera",
+                                        "vivaldi", "whale",  NULL };
+  static const char *const br_labels[] = { "Firefox", "Chrome", "Chromium",
+                                           "Brave",   "Edge",   "Opera",
+                                           "Vivaldi", "Whale",  NULL };
+  self->cookies_browser =
+      make_combo (br_ids, br_labels, "Browser",
+                  "Read while the download runs. Close the browser first if "
+                  "it keeps its cookie database locked.",
+                  "firefox");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup),
+                             self->cookies_browser);
+
+  self->cookies_profile = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->cookies_profile),
+                                 "Browser profile — empty means the default");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup),
+                             self->cookies_profile);
+
+  self->cookies_file = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->cookies_file),
+      "cookies.txt — read, never written; each run gets a private copy");
+  {
+    GtkWidget *pick = gtk_button_new_from_icon_name ("document-open-symbolic");
+    gtk_widget_set_tooltip_text (pick, "Choose a cookies.txt file");
+    gtk_widget_set_valign (pick, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class (pick, "flat");
+    g_signal_connect (pick, "clicked", G_CALLBACK (on_cookie_browse), self);
+    adw_entry_row_add_suffix (ADW_ENTRY_ROW (self->cookies_file), pick);
+  }
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup),
+                             self->cookies_file);
+
+  self->proxy = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->proxy),
+      "Proxy — e.g. socks5h://127.0.0.1:1080; a password is masked in logs");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup), self->proxy);
+
+  self->limit_rate = adw_entry_row_new ();
+  adw_preferences_row_set_title (
+      ADW_PREFERENCES_ROW (self->limit_rate),
+      "Speed limit — bytes per second, e.g. 2M; per worker; empty means none");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup), self->limit_rate);
+
+  static const char *const dl_ids[] = { "native", "aria2c", NULL };
+  static const char *const dl_labels[] = { "Built in", "aria2c", NULL };
+  self->downloader = make_combo (
+      dl_ids, dl_labels, "Downloader",
+      "aria2c must be installed, and reports no progress here.",
+      "native");
+  adw_preferences_group_add (ADW_PREFERENCES_GROUP (cgroup), self->downloader);
+  gtk_box_append (GTK_BOX (form), cgroup);
+
+  /* Filled BEFORE the change handlers are connected, so loading the saved
+   * values does not immediately write them back. */
+  load_connection (self);
+  g_signal_connect (self->cookies_source, "notify::selected",
+                    G_CALLBACK (on_connection_notify), self);
+  g_signal_connect (self->cookies_browser, "notify::selected",
+                    G_CALLBACK (on_connection_notify), self);
+  g_signal_connect (self->downloader, "notify::selected",
+                    G_CALLBACK (on_connection_notify), self);
+  GtkWidget *const conn_entries[] = { self->cookies_profile, self->cookies_file,
+                                      self->proxy, self->limit_rate };
+  for (gsize i = 0; i < G_N_ELEMENTS (conn_entries); i++)
+    g_signal_connect (conn_entries[i], "changed",
+                      G_CALLBACK (on_connection_edited), self);
 
   /* --- Passthrough and the command ----------------------------------- */
   GtkWidget *agroup = adw_preferences_group_new ();
@@ -2261,6 +2687,13 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   self->history_box = make_list ("No runs yet this session.");
 
   GtkWidget *qsec = section ("Queue (0)", NULL, &self->queue_title);
+  self->queue_note = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (self->queue_note), 0.0f);
+  gtk_label_set_wrap (GTK_LABEL (self->queue_note), TRUE);
+  gtk_widget_add_css_class (self->queue_note, "caption");
+  gtk_widget_add_css_class (self->queue_note, "dim-label");
+  gtk_widget_set_visible (self->queue_note, FALSE);
+  gtk_box_append (GTK_BOX (qsec), self->queue_note);
   GtkWidget *qscroll = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (qscroll),
                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -2334,6 +2767,7 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
       }
   }
 
+  update_sensitivity (self);
   refresh_preview (self);
   on_state_changed (runner, self);
 
