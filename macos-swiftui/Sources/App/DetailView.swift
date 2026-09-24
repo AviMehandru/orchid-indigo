@@ -600,8 +600,7 @@ struct DetailView: View {
              * dance, done for it. */
             let resume = model.resumePosition(key)
             if resume > 0 {
-                p.seek(to: CMTime(seconds: resume, preferredTimescale: 600),
-                       toleranceBefore: .zero, toleranceAfter: .zero)
+                DetailView.seekBeforeReady(p, to: resume)
                 resumedFrom = resume
             }
             player = p
@@ -651,6 +650,25 @@ struct DetailView: View {
         if Task.isCancelled { return }
         loaded = result
         loading = false
+    }
+
+    /* A seek WITHOUT a completion handler, on a player whose item may not
+     * have loaded yet. Its own function because it must not be async.
+     *
+     * AVPlayer's seek(to:toleranceBefore:toleranceAfter:) has two Swift
+     * overloads: the plain one, and an async one imported from the
+     * completion-handler form. Inside an async function -- load() is one --
+     * the compiler picks the async overload and demands an await. Both ways
+     * of satisfying it are wrong here: `await` and an explicit completion
+     * handler both reach -seekToTime:...completionHandler:, and AVFoundation
+     * raises NSInvalidArgumentException ("cannot service a seek request with
+     * a completion handler until its status is ReadyToPlay") for that on an
+     * item that is not ready -- which this one never is, having been created
+     * a line earlier. In a synchronous function the plain overload is the
+     * only candidate, and it is the one that queues the seek for later. */
+    private static func seekBeforeReady(_ player: AVPlayer, to seconds: Double) {
+        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     /* A human-written track wins over an auto-generated one, since the whole

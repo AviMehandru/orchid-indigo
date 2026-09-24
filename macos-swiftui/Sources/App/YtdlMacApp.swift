@@ -633,7 +633,6 @@ final class AppModel: ObservableObject {
      * no way to tell which videos were reached. Separate queue entries also
      * mean a single failure is one red row rather than the whole batch. */
     func bulkRefetch(mode: String) {
-        guard let runner else { return }
         let entries = filteredEntries.filter { selectedKeys.contains($0.key) }
 
         var queued = 0

@@ -162,7 +162,6 @@ final class Runner: ObservableObject {
         var errorDescription: String? { "Enter a URL first." }
     }
 
-    @discardableResult
     /* How every run reaches YouTube from now on. Only the five connection
      * fields of `conn` are read; nil means none.
      *
@@ -182,6 +181,7 @@ final class Runner: ObservableObject {
     /* The runner's current connection is stamped onto the queued copy,
      * REPLACING whatever connection fields `opts` carried -- so Run again
      * uses the proxy you have now, not the one you had then. */
+    @discardableResult
     func enqueue(_ opts: RunOptions) throws -> String {
         guard !opts.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EnqueueError.noURL
