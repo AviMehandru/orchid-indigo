@@ -97,7 +97,7 @@
             Everything else here reads the archive; these queue a pipeline run
             that will rewrite this folder, and the separation is the warning.
 
-            Collapsed entirely when the folder has no original_url -- there is
+            Collapsed entirely when the folder has no original_url — there is
             nothing to re-fetch FROM, and a disabled button with no explanation
             is worse than no button.
         -->

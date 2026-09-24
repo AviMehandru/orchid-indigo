@@ -86,11 +86,12 @@
                 </local:OptionRow>
 
                 <!--
-                    --items, which had no control at all before the preview
-                    existed: it was part of a saved profile and reachable only
+                    The playlist-items range, which had no control at all
+                    before the preview existed: it was part of a saved profile
+                    and reachable only
                     by typing yt-dlp's range syntax into the Advanced box as a
                     passthrough. It stays a text field rather than becoming
-                    purely a set of tick boxes, for two reasons -- the
+                    purely a set of tick boxes, for two reasons — the
                     open-ended forms ("200-") cannot be expressed by ticking a
                     list that was truncated, and a range is what a profile
                     stores. Ticking writes here; typing here re-ticks.
