@@ -393,6 +393,7 @@ struct DownloadsView: View {
             passesSection
             extrasSection
             connectionSection
+            notificationsSection
             advancedSection
         }
         .formStyle(.grouped)
@@ -996,6 +997,24 @@ struct DownloadsView: View {
         .onChange(of: settings.proxy) { _ in connectionChanged() }
         .onChange(of: settings.limitRate) { _ in connectionChanged() }
         .onChange(of: settings.downloader) { _ in connectionChanged() }
+    }
+
+    /* Its own section rather than a row under Connection, which is about how
+     * YouTube is reached; beside it because it is the same kind of thing -- a
+     * setting, saved as it changes, not part of a profile. Notifier reads the
+     * flag each time it has something to say, so saving is all there is. */
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Notify when the queue finishes or a run fails", isOn: $settings.notify)
+            Text("Only while this app is in the background. One summary per queue, not one "
+                 + "per run; a failure is announced as it happens. macOS asks for permission "
+                 + "the first time there is something to say.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("When you are away")
+        }
+        .onChange(of: settings.notify) { _ in settings.save() }
     }
 
     /// yt-dlp's --cookies-from-browser names. Safari first: this is the Mac.

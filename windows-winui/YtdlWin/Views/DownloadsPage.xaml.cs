@@ -247,6 +247,7 @@ public sealed partial class DownloadsPage : Page
         ProxyBox.Text = st.Proxy;
         LimitRateBox.Text = st.LimitRate;
         Select(DownloaderBox, st.Downloader);
+        NotifySwitch.IsOn = st.Notify;
         UpdateConnectionVisibility();
 
         foreach (var row in PassesPanel.Children.OfType<OptionRow>())
@@ -450,6 +451,16 @@ public sealed partial class DownloadsPage : Page
 
     private void OnConnectionSelectionChanged(object sender, SelectionChangedEventArgs e)
         => ConnectionChanged();
+
+    /* Saved at once, like the Connection settings. Notifier reads the flag
+     * each time it has something to announce, so there is nothing else to
+     * tell. */
+    private void OnNotifyToggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        Model.Settings.Notify = NotifySwitch.IsOn;
+        Model.Settings.Save();
+    }
 
     private void OnConnectionTextChanged(object sender, TextChangedEventArgs e)
         => ConnectionChanged();

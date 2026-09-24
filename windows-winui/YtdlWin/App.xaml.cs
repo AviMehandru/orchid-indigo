@@ -61,6 +61,10 @@ public partial class App : Application
             catch (Exception) { /* nothing useful to do if even this fails */ }
         };
 
+        /* Before the window, which is the order the App SDK asks for. What a
+         * click does is the window's business; this only routes it there. */
+        Notifier.RegisterForClicks(() => Window?.ShowDownloadsFromNotification());
+
         Window = new MainWindow();
         Window.Activate();
     }

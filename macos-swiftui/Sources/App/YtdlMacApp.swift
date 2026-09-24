@@ -23,6 +23,7 @@
 
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct YtdlMacApp: App {
@@ -45,6 +46,7 @@ struct YtdlMacApp: App {
                     model.runner.start()
                     model.startScan()
                     delegate.runner = model.runner
+                    delegate.model = model
                 }
         }
         .defaultSize(width: 1180, height: 880)
@@ -60,15 +62,43 @@ struct YtdlMacApp: App {
     }
 }
 
-/* Present for one reason: to stop the download when the app quits.
+/* Present for two reasons, both hooks SwiftUI's scene API does not have.
  *
- * A run is a process TREE -- ytdl.ps1, a child pwsh, yt-dlp, ffmpeg -- and
- * quitting the window does not touch it. Left alone it goes on writing to the
- * archive with nothing reading its output, which is the same failure cancel
- * exists to prevent, reached by a different route. SwiftUI has no scene-level
- * termination hook, so this is an NSApplicationDelegate and nothing else. */
-final class AppDelegate: NSObject, NSApplicationDelegate {
+ * To stop the download when the app quits. A run is a process TREE --
+ * ytdl.ps1, a child pwsh, yt-dlp, ffmpeg -- and quitting the window does not
+ * touch it. Left alone it goes on writing to the archive with nothing reading
+ * its output, which is the same failure cancel exists to prevent, reached by
+ * a different route.
+ *
+ * And to receive a click on one of Notifier's notifications, which arrives as
+ * a UNUserNotificationCenterDelegate call and nowhere else. willPresent is
+ * deliberately NOT implemented: without it the system does not show a
+ * notification while the app is frontmost, which is the rule Notifier already
+ * applies before posting -- so a notice that races the user coming back to
+ * the window is swallowed rather than shown to somebody already looking. */
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     weak var runner: Runner?
+    weak var model: AppModel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        /* Set here, during launch, so a click on a notification that
+         * relaunched the app is delivered too. Guarded for the same reason
+         * Notifier.post is: with no bundle identifier current() raises. */
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+        }
+    }
+
+    /// A click: bring the window forward on the page that explains it.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        Task { @MainActor in
+            NSApp.activate()
+            self.model?.section = .downloads
+        }
+        completionHandler()
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
@@ -195,6 +225,10 @@ final class AppModel: ObservableObject {
      * @State goes with it. */
     let profiles: ProfileStore
     let downloads: DownloadsModel
+    /* Optional only because it is built from `runner`, and Swift will not
+     * let an initialiser read a stored property until every one is set. It
+     * is set at the end of init and never cleared. */
+    private var notifier: Notifier?
 
     private(set) var archiveRoot: String?
 
@@ -236,6 +270,11 @@ final class AppModel: ObservableObject {
          * the facets this is not a filter the user set -- it is the store's
          * answer, and the "unwatched" facet is wrong without it. */
         filter.watchedKeys = userData.watchedKeys
+
+        /* Seeded from the history the Runner restored, before its worker
+         * starts, so last session's runs are never announced as if they had
+         * just finished. */
+        notifier = Notifier(runner: runner, settings: loaded)
     }
 
     /// Remember an ordering the user chose. Called from the sort control, not

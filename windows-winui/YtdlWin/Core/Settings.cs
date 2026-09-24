@@ -70,6 +70,12 @@ public sealed class Settings
     /// "native" | "aria2c"
     public string Downloader { get; set; } = "native";
 
+    /// Whether a finished queue or a failed run is announced as a toast while
+    /// the window is in the background. On by default: the point is to hear
+    /// about the run that failed at 3am, and a setting that has to be found
+    /// first is one most people would never turn on. See Notices.cs.
+    public bool Notify { get; set; } = true;
+
     private static string Path() => Paths.Join(Paths.StateDir(), "settings.json");
 
     public static Settings Load()
@@ -96,6 +102,9 @@ public sealed class Settings
         s.Proxy = obj.Value.Str("proxy") ?? "";
         s.LimitRate = obj.Value.Str("limit_rate") ?? "";
         s.Downloader = NonEmpty(obj.Value.Str("downloader")) ?? "native";
+        /* Absent reads as TRUE, for the upgrade case: a settings.json written
+         * before this key existed must not switch notifications off. */
+        s.Notify = obj.Value.TryGetProperty("notify", out _) ? obj.Value.Bool("notify") : true;
         return s;
     }
 
@@ -144,6 +153,7 @@ public sealed class Settings
             w.WriteString("proxy", Proxy);
             w.WriteString("limit_rate", LimitRate);
             w.WriteString("downloader", Downloader);
+            w.WriteBoolean("notify", Notify);
             w.WriteEndObject();
         });
         AtomicFile.Write(data, Path());

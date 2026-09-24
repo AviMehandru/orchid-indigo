@@ -54,6 +54,12 @@ final class Settings: ObservableObject {
     /// "native" | "aria2c"
     @Published var downloader: String = "native"
 
+    /// Whether a finished queue or a failed run is announced as a notification
+    /// while the app is in the background. On by default: the point is to
+    /// hear about the run that failed at 3am, and a setting that has to be
+    /// found first is one most people would never turn on. See Notices.swift.
+    @Published var notify: Bool = true
+
     private static func path() -> String {
         Paths.join(Paths.stateDir(), "settings.json")
     }
@@ -79,6 +85,9 @@ final class Settings: ObservableObject {
         s.proxy = obj.str("proxy") ?? ""
         s.limitRate = obj.str("limit_rate") ?? ""
         s.downloader = obj.str("downloader").flatMap { $0.isEmpty ? nil : $0 } ?? "native"
+        /* Absent reads as TRUE, for the upgrade case: a settings.json written
+         * before this key existed must not switch notifications off. */
+        s.notify = obj["notify"] == nil ? true : obj.bool("notify")
         return s
     }
 
@@ -119,6 +128,7 @@ final class Settings: ObservableObject {
             "proxy": proxy,
             "limit_rate": limitRate,
             "downloader": downloader,
+            "notify": notify,
         ]
         /* Owner-only, because since the Connection settings this file can
          * hold a proxy password. */

@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window
 {
     private AppModel _model = null!;
     private bool _alerting;
+    private Notifier? _notifier;
 
     public MainWindow()
     {
@@ -54,6 +55,17 @@ public sealed partial class MainWindow : Window
 
         Nav.SelectedItem = Nav.MenuItems[0];
         ContentFrame.Navigate(typeof(LibraryPage));
+
+        /* Before the worker starts, so the history it is seeded from is exactly
+         * what was restored. Owned by the window rather than the Downloads
+         * page, because a queue that ends while the Library is showing is the
+         * case it exists for. */
+        _notifier = new Notifier(_model.Runner, _model.Settings, DispatcherQueue);
+        Activated += (_, e) =>
+        {
+            if (_notifier is not null)
+                _notifier.WindowActive = e.WindowActivationState != WindowActivationState.Deactivated;
+        };
 
         /* The worker starts only once the window it will publish into exists. A
          * restored queue would otherwise begin producing events with nothing to
@@ -97,6 +109,8 @@ public sealed partial class MainWindow : Window
     {
         _model.Changed -= OnModelChanged;
         _model.Alert -= OnAlert;
+        _notifier?.Stop();
+        Notifier.Unregister();
         _model.Runner.Stop();
     }
 
@@ -217,6 +231,17 @@ public sealed partial class MainWindow : Window
             }
         }
         StatusText.Text = note;
+    }
+
+    /// What clicking a notification does: bring the window back, on the page
+    /// that explains it. Restored first, because Activate on a minimised
+    /// window focuses it without showing it.
+    public void ShowDownloadsFromNotification()
+    {
+        if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } p)
+            p.Restore();
+        NavigateToDownloads("Opened from a notification.");
+        Activate();
     }
 
     /// Navigate the shared frame, which is how the Library opens a video.

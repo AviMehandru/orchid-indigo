@@ -46,6 +46,20 @@ final class Runner: ObservableObject {
 
     var isRunning: Bool { current != nil }
 
+    /* How many runs are still to run: the queue plus the one in flight.
+     * Published from the same locked snapshot as `history`, so the two always
+     * agree -- which is what deciding that a queue has FINISHED needs (see
+     * pendingInFlight). Zero means nothing is left to do; a paused queue with
+     * runs waiting is not zero. */
+    @Published private(set) var remaining = 0
+
+    /* Called on the main thread after every drain that changed the state,
+     * with the history and `remaining` from one snapshot. The notification
+     * tracker's feed: a closure rather than an observation of the two
+     * @Published values, because those arrive as two separate changes and a
+     * reader of one could see it paired with the other's stale value. */
+    var onSettled: (([RunRecord], Int) -> Void)?
+
     // MARK: Shared state, under `lock`
 
     private let lock = NSCondition()
@@ -54,6 +68,13 @@ final class Runner: ObservableObject {
     private var pendingCurrent: RunRecord?
     private var pendingProgress = RunProgress()
     private var pendingPaused = false
+    /* TRUE from the moment the worker takes an item off the queue until
+     * finish() files it in history. Wider than `pendingCurrent != nil`, which
+     * runOne only sets after resolving pwsh and the script: in between, the
+     * item is in neither list, and "is anything left to do?" would be
+     * answered no while a run is about to start. The GTK runner's test that
+     * polls against forty runs failed 3 times in 5 without its equivalent. */
+    private var pendingInFlight = false
     private var pendingLines: [(text: String, transient: Bool)] = []
     private var stateDirty = false
     private var childPID: pid_t = 0
@@ -89,6 +110,7 @@ final class Runner: ObservableObject {
 
         queue = pendingQueue
         history = pendingHistory
+        remaining = pendingQueue.count
     }
 
     /* Separate from init so the window can be built, and only then begin
@@ -235,7 +257,7 @@ final class Runner: ObservableObject {
     private func drain() {
         var lines: [(text: String, transient: Bool)] = []
         var snapshot: (queue: [RunRecord], history: [RunRecord], current: RunRecord?,
-                       progress: RunProgress, paused: Bool)?
+                       progress: RunProgress, paused: Bool, remaining: Int)?
 
         lock.lock()
         /* Bounded per tick. A run that produces output faster than the window
@@ -248,7 +270,8 @@ final class Runner: ObservableObject {
         }
         if stateDirty {
             stateDirty = false
-            snapshot = (pendingQueue, pendingHistory, pendingCurrent, pendingProgress, pendingPaused)
+            snapshot = (pendingQueue, pendingHistory, pendingCurrent, pendingProgress, pendingPaused,
+                        pendingQueue.count + (pendingInFlight ? 1 : 0))
         }
         lock.unlock()
 
@@ -282,7 +305,20 @@ final class Runner: ObservableObject {
             current = s.current
             progress = s.progress
             paused = s.paused
+            remaining = s.remaining
+            onSettled?(s.history, s.remaining)
         }
+    }
+
+    /* The history and the number of runs still to run, read under the lock
+     * right now rather than as of the last drain. What onSettled delivers,
+     * without waiting 50ms for it -- which is how the test that pins
+     * pendingInFlight can look for the gap at all: a drain samples too rarely
+     * to land in it. */
+    func settled() -> (history: [RunRecord], remaining: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (pendingHistory, pendingQueue.count + (pendingInFlight ? 1 : 0))
     }
 
     func clearLog() {
@@ -309,6 +345,7 @@ final class Runner: ObservableObject {
                 return
             }
             var item = pendingQueue.removeFirst()
+            pendingInFlight = true
             persistLocked()
             stateDirty = true
             lock.unlock()
@@ -452,6 +489,7 @@ final class Runner: ObservableObject {
     private func finish(_ rec: RunRecord) {
         lock.lock()
         pendingCurrent = nil
+        pendingInFlight = false
         childPID = 0
         pendingProgress = RunProgress()
         pendingHistory.insert(rec, at: 0)
@@ -480,9 +518,16 @@ final class Runner: ObservableObject {
     private func persistLocked() {
         let history = pendingHistory
         let queue = pendingQueue
+        /* The paths are resolved HERE, with the snapshot, and not inside the
+         * async block. Resolved there, they would be read whenever the queue
+         * got round to it -- after a test that pointed HOME at a temp
+         * directory had put it back, say, which would write that test's
+         * records over the real queue in ~/Library. */
+        let historyPath = Runner.stateFile("history.json")
+        let queuePath = Runner.stateFile("queue.json")
         Runner.persistQueue.async {
-            Runner.writeRecords(history, to: Runner.stateFile("history.json"))
-            Runner.writeRecords(queue, to: Runner.stateFile("queue.json"))
+            Runner.writeRecords(history, to: historyPath)
+            Runner.writeRecords(queue, to: queuePath)
         }
     }
 

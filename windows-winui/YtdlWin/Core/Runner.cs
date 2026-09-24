@@ -56,6 +56,18 @@ public sealed class RunnerState
     public required bool Paused { get; init; }
 }
 
+/// The history and how many runs are still to run, from ONE acquisition of
+/// the lock -- see Runner.Settled.
+public sealed class QueueSettlement
+{
+    public required IReadOnlyList<RunRecord> History { get; init; }
+    /// The queue plus the run in flight. Zero means nothing is left to do; a
+    /// paused queue with runs waiting is not zero.
+    public required int Remaining { get; init; }
+    /// Pass back to Settled to be told only about changes after this one.
+    public required long Version { get; init; }
+}
+
 public sealed class Runner
 {
     private const int MaxLogLines = 4000;
@@ -73,6 +85,19 @@ public sealed class Runner
     private RunProgress _progress = new();
     private bool _paused;
     private bool _stateDirty;
+    /* TRUE from the moment the worker takes an item off the queue until
+     * Finish files it in history. Wider than `_current is not null`, which
+     * RunOne only sets after resolving pwsh and the script: in between, the
+     * item is in neither list, and "is anything left to do?" would be answered
+     * no while a run is about to start. The GTK runner's test that polls
+     * against forty runs failed 3 times in 5 without its equivalent. */
+    private bool _inFlight;
+    /* Bumped wherever the history or the remaining count changes, so the
+     * notifier's poll can ask "anything since last time?" without cloning
+     * three hundred records a second to find out. Starts at 1 so that a
+     * caller's first question, asked with 0, is always answered. Guarded by
+     * _lock. */
+    private long _settledVersion = 1;
     private bool _cancelRequested;
     private bool _stopRequested;
     private uint _counter;
@@ -210,6 +235,7 @@ public sealed class Runner
                 Format.NowUnix(), Environment.ProcessId, _counter);
             _queue.Add(record);
             _stateDirty = true;
+            _settledVersion++;
             PersistLocked();
             Monitor.PulseAll(_lock);
         }
@@ -251,6 +277,7 @@ public sealed class Runner
         {
             _queue.RemoveAll(r => r.Id == id);
             _stateDirty = true;
+            _settledVersion++;
             PersistLocked();
         }
     }
@@ -261,6 +288,7 @@ public sealed class Runner
         {
             _history.Clear();
             _stateDirty = true;
+            _settledVersion++;
             PersistLocked();
         }
     }
@@ -316,6 +344,29 @@ public sealed class Runner
         return new RunnerSnapshot { Lines = lines, State = state };
     }
 
+    /* The history and the number of runs still to run, read under ONE
+     * acquisition of the lock -- or null if neither has changed since
+     * `sinceVersion`. Pass 0 for "whatever it is now".
+     *
+     * For deciding that a queue has FINISHED, which the notifier needs and
+     * Drain cannot give it: Drain belongs to the Downloads page, whose timer
+     * stops whenever another page is showing, and a queue that ends while the
+     * Library is on screen is exactly the case notifications are for.
+     * Non-consuming, so the two readers never take each other's changes. */
+    public QueueSettlement? Settled(long sinceVersion)
+    {
+        lock (_lock)
+        {
+            if (sinceVersion == _settledVersion) return null;
+            return new QueueSettlement
+            {
+                History = _history.Select(r => r.Clone()).ToList(),
+                Remaining = _queue.Count + (_inFlight ? 1 : 0),
+                Version = _settledVersion,
+            };
+        }
+    }
+
     /// The state as it stands, for the first paint before any drain has run.
     public RunnerState CurrentState()
     {
@@ -364,7 +415,9 @@ public sealed class Runner
 
                 item = _queue[0];
                 _queue.RemoveAt(0);
+                _inFlight = true;
                 _stateDirty = true;
+                _settledVersion++;
                 PersistLocked();
             }
 
@@ -552,9 +605,11 @@ public sealed class Runner
         lock (_lock)
         {
             _current = null;
+            _inFlight = false;
             _child = null;
             _progress = new RunProgress();
             _history.Insert(0, record);
+            _settledVersion++;
             if (_history.Count > MaxHistory)
                 _history.RemoveRange(MaxHistory, _history.Count - MaxHistory);
             _stateDirty = true;
@@ -576,13 +631,20 @@ public sealed class Runner
     {
         var history = _history.Select(r => r.Clone()).ToList();
         var queue = _queue.Select(r => r.Clone()).ToList();
+        /* The paths are resolved HERE, with the snapshot, and not on the pool
+         * thread. Resolved there, they would be read whenever the pool got
+         * round to it -- after a test that redirected the state directory had
+         * put it back, say, which would write that test's records over the
+         * real queue under %LOCALAPPDATA%. */
+        var historyPath = StateFile("history.json");
+        var queuePath = StateFile("queue.json");
 
         ThreadPool.QueueUserWorkItem(_ =>
         {
             lock (_persistLock)
             {
-                WriteRecords(history, StateFile("history.json"));
-                WriteRecords(queue, StateFile("queue.json"));
+                WriteRecords(history, historyPath);
+                WriteRecords(queue, queuePath);
             }
         });
     }

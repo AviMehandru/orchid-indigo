@@ -287,6 +287,19 @@
                     <ComboBox x:Name="DownloaderBox" MinWidth="180" SelectionChanged="OnConnectionSelectionChanged" />
                 </local:OptionRow>
 
+                <!--
+                    Notifications. A setting like Connection, saved as it
+                    changes; its own section because Connection is about how
+                    YouTube is reached. Notifier reads it each time it has
+                    something to say.
+                -->
+                <TextBlock Text="When you are away" Style="{StaticResource SectionHeader}" Margin="0,12,0,4" />
+                <local:OptionRow Header="Notify when the queue finishes or a run fails"
+                                 Description="Only while this window is in the background. One summary per queue, not one per run; a failure is announced as it happens.">
+                    <ToggleSwitch x:Name="NotifySwitch" OnContent="On" OffContent="Off"
+                                  Toggled="OnNotifyToggled" />
+                </local:OptionRow>
+
                 <!-- Advanced -->
                 <TextBlock Text="Advanced" Style="{StaticResource SectionHeader}" Margin="0,12,0,8" />
                 <local:OptionRow Header="Extra yt-dlp arguments"
