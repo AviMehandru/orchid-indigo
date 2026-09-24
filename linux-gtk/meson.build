@@ -90,6 +90,26 @@ executable('ytdl-gtk',
   include_directories : include_directories('src'),
   install : true)
 
+# The launcher entry. Without it the .deb put a binary on PATH and nothing in
+# the applications menu -- and, less visibly, GNOME Shell had no way to match
+# the running window to an application at all, which is also what it checks
+# before it will show a GNotification from this app ID. The file's comment has
+# the detail.
+#
+# Installed, not generated: nothing in it varies by build, and a configure_file
+# step would be machinery for a file that is eleven lines of fixed text.
+desktop_file = files('data/io.github.avimehandru.YtdlGtk.desktop')
+install_data(desktop_file,
+  install_dir : get_option('datadir') / 'applications')
+
+# Validated when the validator is present, and skipped rather than failed when
+# it is not: desktop-file-utils is not a build dependency, and a missing linter
+# should not stop anybody compiling. Any GNOME desktop already has it.
+desktop_validate = find_program('desktop-file-validate', required : false)
+if desktop_validate.found()
+  test('desktop file', desktop_validate, args : [desktop_file])
+endif
+
 # The conformance test the archive layout contract asks every out-of-repo
 # consumer to keep: build a fixture tree in the documented shape and assert
 # this reader finds it. A layout bump then breaks the build here rather than

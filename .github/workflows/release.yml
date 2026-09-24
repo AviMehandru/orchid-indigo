@@ -151,13 +151,12 @@ jobs:
         env:
           VERSION: ${{ steps.v.outputs.version }}
           ARCH: ${{ matrix.arch }}
-        # NOTE: meson.build currently installs the executable and nothing
-        # else -- no .desktop entry, no icon, no AppStream metainfo -- so this
-        # package puts a binary on PATH with no launcher in the applications
-        # menu. Adding linux-gtk/data/ and installing it from meson.build is
-        # the fix; this file should not grow its own copy of that, because
-        # packaging logic that lives only in CI is how the local build and the
-        # shipped build drift apart.
+        # NOTE: meson.build installs the executable and the .desktop entry
+        # from linux-gtk/data/, so `meson install` above already staged both.
+        # Still no icon and no AppStream metainfo. When they come, they go in
+        # linux-gtk/data/ and meson.build too -- this file should not grow its
+        # own copy of any of it, because packaging logic that lives only in CI
+        # is how the local build and the shipped build drift apart.
         #
         # Depends lists the runtime libraries, not the -dev packages. It does
         # NOT list pwsh, yt-dlp or ffmpeg: those are the pipeline's

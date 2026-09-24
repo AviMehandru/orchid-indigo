@@ -30,6 +30,11 @@ meson test -C build
 Fedora: `sudo dnf install gtk4-devel libadwaita-devel json-glib-devel meson
 ninja-build`.
 
+`meson install -C build` (or the `.deb` a release builds) installs the binary
+and a launcher entry, `data/io.github.avimehandru.YtdlGtk.desktop`, so the app
+appears in the applications menu and GNOME can match its window to it. There
+is no icon yet; the desktop shows its generic one.
+
 Needs GTK 4.12 and libadwaita 1.5, which is Ubuntu 24.04 LTS, Debian 13,
 Fedora 40 and anything newer. The libadwaita floor is 1.5 rather than 1.4
 because 1.4's `AdwMessageDialog` is deprecated in 1.6 — with `-Werror` that is

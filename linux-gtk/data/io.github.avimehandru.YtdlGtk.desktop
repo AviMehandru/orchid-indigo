@@ -1,0 +1,23 @@
+# The launcher entry, installed to $datadir/applications by meson.build.
+#
+# THE FILE NAME IS NOT COSMETIC. It must be the GApplication ID in main.c
+# plus ".desktop", because that is how GNOME Shell connects a running
+# window to an application -- for the dock, for the window's icon, and for
+# notifications: Shell refuses a GNotification from an app ID it cannot
+# find a .desktop file for, and GLib drops that refusal on the floor. Rename
+# one and the other must follow.
+#
+# Icon names the app ID too. No icon is installed yet (gap H), so the
+# desktop shows its generic application icon until one is; naming it now
+# means the icon, when it arrives, needs no change here.
+[Desktop Entry]
+Type=Application
+Name=yt-dlp Archive
+GenericName=Video Archive
+Comment=Browse a yt-dlp archive and start downloads through the installed pipeline
+Exec=ytdl-gtk
+Icon=io.github.avimehandru.YtdlGtk
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=youtube;yt-dlp;download;archive;
+StartupNotify=true
