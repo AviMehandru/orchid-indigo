@@ -60,6 +60,8 @@ final class Runner: ObservableObject {
     private var cancelRequested = false
     private var stopRequested = false
     private var counter: UInt32 = 0
+    /// Only the five connection fields are meaningful. Guarded by `lock`.
+    private var connection = RunOptions()
 
     private var worker: Thread?
     private var timer: Timer?
@@ -139,6 +141,25 @@ final class Runner: ObservableObject {
     }
 
     @discardableResult
+    /* How every run reaches YouTube from now on. Only the five connection
+     * fields of `conn` are read; nil means none.
+     *
+     * Held by the RUNNER rather than applied by each caller, because five
+     * places enqueue a run -- Add to queue, Run again, the re-fetch on a
+     * video's page, the bulk re-fetch, and a restored queue -- and a cookie
+     * setting honoured by four of them is the run that downloads a
+     * members-only video and then fails its re-fetch. */
+    func setConnection(_ conn: RunOptions?) {
+        var c = RunOptions()
+        c.setConnection(from: conn)
+        lock.lock()
+        connection = c
+        lock.unlock()
+    }
+
+    /* The runner's current connection is stamped onto the queued copy,
+     * REPLACING whatever connection fields `opts` carried -- so Run again
+     * uses the proxy you have now, not the one you had then. */
     func enqueue(_ opts: RunOptions) throws -> String {
         guard !opts.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EnqueueError.noURL
@@ -146,7 +167,10 @@ final class Runner: ObservableObject {
 
         var rec = RunRecord()
         rec.opts = opts
-        rec.command = opts.commandPreview()
+        lock.lock()
+        rec.opts.setConnection(from: connection)
+        lock.unlock()
+        rec.command = rec.opts.commandPreview()
         rec.state = "queued"
         rec.started = Runner.now()
 
@@ -472,7 +496,10 @@ final class Runner: ObservableObject {
      * losing real work. A truncated write from a crash or a full disk would
      * take all of it, and a rename within one filesystem is atomic. */
     static func writeRecords(_ records: [RunRecord], to path: String) {
-        AtomicFile.write(JSONFile.data(from: records.map { $0.toJSON() }), to: path)
+        /* Owner-only: a run's options now include its proxy, which can carry
+         * a password. Same mode, same reason, as settings.json. */
+        AtomicFile.write(JSONFile.data(from: records.map { $0.toJSON() }), to: path,
+                         ownerOnly: true)
     }
 
     static func readRecords(at path: String) -> [RunRecord] {
@@ -487,7 +514,7 @@ final class Runner: ObservableObject {
 /// profiles, the queue and the history.
 enum AtomicFile {
     @discardableResult
-    static func write(_ data: Data?, to path: String) -> Bool {
+    static func write(_ data: Data?, to path: String, ownerOnly: Bool = false) -> Bool {
         guard let data else { return false }
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(
@@ -495,6 +522,17 @@ enum AtomicFile {
         )
 
         let tmp = path + ".tmp"
+        /* ownerOnly: the temp file is CREATED 0600 and only then written, so
+         * there is no moment at which a proxy password sits in a file anyone
+         * else can read. A non-atomic Data.write into an existing file keeps
+         * that file's mode, and the rename below carries it to `path`. */
+        if ownerOnly {
+            try? FileManager.default.removeItem(atPath: tmp)
+            guard FileManager.default.createFile(
+                atPath: tmp, contents: nil,
+                attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+            ) else { return false }
+        }
         guard (try? data.write(to: URL(fileURLWithPath: tmp))) != nil else { return false }
 
         do {

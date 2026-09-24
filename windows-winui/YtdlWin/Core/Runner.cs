@@ -76,6 +76,8 @@ public sealed class Runner
     private bool _cancelRequested;
     private bool _stopRequested;
     private uint _counter;
+    /// Only the five connection fields are meaningful. Guarded by _lock.
+    private RunOptions _connection = new();
     private SpawnedChild? _child;
 
     private Thread? _worker;
@@ -165,15 +167,36 @@ public sealed class Runner
         public EnqueueException(string message) : base(message) { }
     }
 
+    /* How every run reaches YouTube from now on. Only the five connection
+     * fields of `conn` are read; null means none.
+     *
+     * Held by the RUNNER rather than applied by each caller, because five
+     * places enqueue a run -- Add to queue, Run again, the re-fetch on a
+     * video's page, the bulk re-fetch, and a restored queue -- and a cookie
+     * setting honoured by four of them is the run that downloads a
+     * members-only video and then fails its re-fetch. */
+    public void SetConnection(RunOptions? conn)
+    {
+        var c = new RunOptions();
+        c.SetConnection(conn);
+        lock (_lock) _connection = c;
+    }
+
+    /* The runner's current connection is stamped onto the queued copy,
+     * REPLACING whatever connection fields `opts` carried -- so Run again
+     * uses the proxy you have now, not the one you had then. */
     public string Enqueue(RunOptions opts)
     {
         if (string.IsNullOrWhiteSpace(opts.Url))
             throw new EnqueueException("Enter a URL first.");
 
+        var stamped = opts.Clone();
+        lock (_lock) stamped.SetConnection(_connection);
+
         var record = new RunRecord
         {
-            Opts = opts.Clone(),
-            Command = opts.CommandPreview(),
+            Opts = stamped,
+            Command = stamped.CommandPreview(),
             State = "queued",
             Started = Format.NowUnix(),
         };

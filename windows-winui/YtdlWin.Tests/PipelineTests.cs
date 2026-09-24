@@ -16,6 +16,130 @@ namespace YtdlWin.Tests;
 
 public sealed class PipelineTests
 {
+    // MARK: - The options that used to be reachable only through Advanced
+
+    private static string Joined(RunOptions o) => string.Join("|", o.ToArgs());
+
+    [Fact]
+    public void MediaOptionsEmitInOrder()
+    {
+        var o = new RunOptions
+        {
+            Url = "u", Container = "mkv", Fps = 30, SubLangs = "en.*,de", NoChapters = true,
+            SponsorblockRemove = "sponsor,selfpromo",
+        };
+        Assert.Equal("u|--fps|30|--sub-langs|en.*,de|--no-chapters|"
+                     + "--sponsorblock-remove|sponsor,selfpromo", Joined(o));
+    }
+
+    [Fact]
+    public void NewOptionsDefaultToNothing()
+    {
+        var o = new RunOptions { Url = "u", SubLangs = "   ", Downloader = "native" };
+        Assert.Equal("u", Joined(o));
+    }
+
+    /* After every content option and before the passthrough, so a
+     * --ytdlp-arg --proxy from before these existed still comes last and
+     * still wins. */
+    [Fact]
+    public void ConnectionOptionsEmitBeforePassthrough()
+    {
+        var o = new RunOptions
+        {
+            Url = "u", NoSubs = true, CookiesFromBrowser = "firefox:default",
+            Proxy = "socks5://u:pw@h:1080", LimitRate = "2M", Downloader = "aria2c",
+        };
+        o.YtdlpArgs.Add("--proxy");
+        Assert.Equal("u|--no-subs|--cookies-from-browser|firefox:default|"
+                     + "--proxy|socks5://u:pw@h:1080|--limit-rate|2M|"
+                     + "--downloader|aria2c|--ytdlp-arg|--proxy", Joined(o));
+    }
+
+    [Fact]
+    public void ProbeGetsCookiesAndProxyOnly()
+    {
+        var o = new RunOptions
+        {
+            CookiesFile = @"C:\Users\me\cookies.txt", Proxy = "http://p:3128",
+            LimitRate = "2M", Downloader = "aria2c",
+        };
+        Assert.Equal(@"--cookies|C:\Users\me\cookies.txt|--proxy|http://p:3128",
+                     string.Join("|", o.ConnectionArgs(forProbe: true)));
+        Assert.Equal(@"--cookies|C:\Users\me\cookies.txt|--proxy|http://p:3128|"
+                     + "--limit-rate|2M|--downloader|aria2c",
+                     string.Join("|", o.ConnectionArgs(forProbe: false)));
+    }
+
+    /// Shared fixture: the GTK and SwiftUI suites assert these same six pairs.
+    [Theory]
+    [InlineData("socks5://me:hunter2@127.0.0.1:1080", "socks5://***@127.0.0.1:1080")]
+    [InlineData("http://user@proxy:3128", "http://***@proxy:3128")]
+    [InlineData("http://proxy:3128", "http://proxy:3128")]
+    [InlineData("https://a:b@c@host:1/", "https://***@host:1/")]
+    [InlineData("socks5h://u:p@[::1]:1080", "socks5h://***@[::1]:1080")]
+    [InlineData("not a url", "not a url")]
+    public void RedactProxy(string input, string expected)
+        => Assert.Equal(expected, RunOptions.RedactProxy(input));
+
+    [Fact]
+    public void PreviewMasksTheProxyPasswordAndArgvDoesNot()
+    {
+        var o = new RunOptions { Url = "u", Proxy = "socks5://me:hunter2@h:1080" };
+        var cmd = o.CommandPreview();
+        Assert.DoesNotContain("hunter2", cmd, StringComparison.Ordinal);
+        Assert.Contains("--proxy socks5://***@h:1080", cmd, StringComparison.Ordinal);
+        Assert.Contains("socks5://me:hunter2@h:1080", o.ToArgs());
+    }
+
+    /// The rules the form's greyed-out rows follow. Shared fixture with the
+    /// GTK and SwiftUI suites, row for row.
+    [Fact]
+    public void DropInapplicable()
+    {
+        var a = new RunOptions
+        {
+            Mode = "comments-only", Fps = 30, NoChapters = true, SponsorblockMark = "all",
+            SponsorblockRemove = "sponsor", SubLangs = "de", Proxy = "http://p:1",
+        };
+        a.DropInapplicable();
+        Assert.Equal(0, a.Fps);
+        Assert.False(a.NoChapters);
+        Assert.Equal("", a.SponsorblockMark);
+        Assert.Equal("", a.SponsorblockRemove);
+        Assert.Equal("de", a.SubLangs);          // subtitles are written in every mode
+        Assert.Equal("http://p:1", a.Proxy);     // the connection is not the form's to drop
+
+        var b = new RunOptions { NoSubs = true, SubLangs = "de" };
+        b.DropInapplicable();
+        Assert.Equal("", b.SubLangs);
+
+        var c = new RunOptions { Mode = "full", NoChapters = true, SponsorblockMark = "all" };
+        c.DropInapplicable();
+        Assert.False(c.NoChapters);              // marking needs chapters, so it wins
+        Assert.Equal("all", c.SponsorblockMark);
+
+        var d = new RunOptions { Mode = "audio-only", Fps = 60, NoChapters = true, SponsorblockRemove = "sponsor" };
+        d.DropInapplicable();
+        Assert.Equal(60, d.Fps);
+        Assert.True(d.NoChapters);
+        Assert.Equal("sponsor", d.SponsorblockRemove);
+    }
+
+    [Fact]
+    public void NewFieldsRoundTripJsonAndClone()
+    {
+        var o = new RunOptions
+        {
+            Url = "u", Fps = 60, SubLangs = "all,-live_chat", NoChapters = true,
+            SponsorblockMark = "all,-filler", CookiesFile = "/c.txt", Proxy = "http://p:1",
+            LimitRate = "500K", Downloader = "aria2c",
+        };
+        var back = RunOptions.FromJson(JsonFile.ObjectFrom(JsonFile.Write(o.WriteTo)));
+        Assert.Equal(Joined(o), Joined(back));
+        Assert.Equal(Joined(o), Joined(o.Clone()));
+    }
+
     // MARK: - The argument builder
 
     /* A plain download produces exactly the command line it produced before any

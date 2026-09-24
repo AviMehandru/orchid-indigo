@@ -90,6 +90,29 @@ public sealed partial class DownloadsPage : Page
     {
         ("MKV", "mkv"), ("MP4", "mp4"), ("WebM", "webm"),
     };
+    private static readonly (string Label, string Value)[] FrameRates =
+    {
+        ("Any", "0"), ("≤ 60 fps", "60"), ("≤ 30 fps", "30"),
+    };
+    private static readonly (string Label, string Value)[] SponsorModes =
+    {
+        ("Off", "off"), ("Mark as chapters", "mark"), ("Cut out of the file", "remove"),
+    };
+    private static readonly (string Label, string Value)[] CookieSources =
+    {
+        ("None", "none"), ("From a browser", "browser"), ("From a cookies.txt file", "file"),
+    };
+    /// yt-dlp's --cookies-from-browser names. No Safari: yt-dlp reads it on
+    /// macOS only. Edge first: this is Windows.
+    private static readonly (string Label, string Value)[] Browsers =
+    {
+        ("Edge", "edge"), ("Chrome", "chrome"), ("Firefox", "firefox"), ("Brave", "brave"),
+        ("Chromium", "chromium"), ("Opera", "opera"), ("Vivaldi", "vivaldi"), ("Whale", "whale"),
+    };
+    private static readonly (string Label, string Value)[] Downloaders =
+    {
+        ("Built in", "native"), ("aria2c", "aria2c"),
+    };
 
     /* Every switch carries its own explanation, the way the GTK rows do. These
      * were tooltips once, and a tooltip nobody hovers over is not documentation
@@ -150,6 +173,11 @@ public sealed partial class DownloadsPage : Page
         Fill(CodecBox, Codecs);
         Fill(AudioCodecBox, AudioCodecs);
         Fill(ContainerBox, Containers);
+        Fill(FpsBox, FrameRates);
+        Fill(SponsorModeBox, SponsorModes);
+        Fill(CookiesSourceBox, CookieSources);
+        Fill(CookiesBrowserBox, Browsers);
+        Fill(DownloaderBox, Downloaders);
         _suppressChanges = false;
     }
 
@@ -204,6 +232,22 @@ public sealed partial class DownloadsPage : Page
         Select(CodecBox, Form.Opts.Codec);
         Select(AudioCodecBox, Form.Opts.AudioCodec);
         Select(ContainerBox, Form.Opts.Container);
+        Select(FpsBox, Form.Opts.Fps.ToString(CultureInfo.InvariantCulture));
+        SubLangsBox.Text = Form.Opts.SubLangs;
+        ChaptersSwitch.IsOn = !Form.Opts.NoChapters;
+        Select(SponsorModeBox, Form.SponsorMode);
+        SponsorCatsBox.Text = Form.SponsorCats;
+
+        /* The Connection rows read Settings, not the form: they are settings. */
+        var st = Model.Settings;
+        Select(CookiesSourceBox, st.CookiesSource);
+        Select(CookiesBrowserBox, st.CookiesBrowser);
+        CookiesProfileBox.Text = st.CookiesProfile;
+        CookiesFileBox.Text = st.CookiesFile;
+        ProxyBox.Text = st.Proxy;
+        LimitRateBox.Text = st.LimitRate;
+        Select(DownloaderBox, st.Downloader);
+        UpdateConnectionVisibility();
 
         foreach (var row in PassesPanel.Children.OfType<OptionRow>())
         {
@@ -216,6 +260,30 @@ public sealed partial class DownloadsPage : Page
             Form.StatusIsError ? "SystemFillColorCriticalBrush" : "TextFillColorSecondaryBrush");
 
         _suppressChanges = false;
+        UpdateSensitivity();
+    }
+
+    /* Grey out what cannot apply, mirroring RunOptions.DropInapplicable rule
+     * for rule -- the one decides what the user SEES, the other what is SENT,
+     * and the two must never disagree. Disabled rather than hidden, so the
+     * value is still visible and comes back when the mode does. */
+    private void UpdateSensitivity()
+    {
+        var media = Form.MediaOptionsApply;
+        var mode = Selected(SponsorModeBox);
+        FpsBox.IsEnabled = media;
+        SponsorModeBox.IsEnabled = media;
+        SponsorCatsBox.IsEnabled = media && mode != "off";
+        ChaptersSwitch.IsEnabled = media && mode != "mark";
+        SubLangsBox.IsEnabled = !Form.Opts.NoSubs;
+    }
+
+    private void UpdateConnectionVisibility()
+    {
+        var source = Selected(CookiesSourceBox);
+        CookiesBrowserRow.Visibility = source == "browser" ? Visibility.Visible : Visibility.Collapsed;
+        CookiesProfileRow.Visibility = source == "browser" ? Visibility.Visible : Visibility.Collapsed;
+        CookiesFileRow.Visibility = source == "file" ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /* A switch statement rather than reflection over the field name. Reflection
@@ -281,6 +349,9 @@ public sealed partial class DownloadsPage : Page
         Form.Opts.Codec = Selected(CodecBox);
         Form.Opts.AudioCodec = Selected(AudioCodecBox);
         Form.Opts.Container = Selected(ContainerBox);
+        Form.Opts.Fps = int.TryParse(Selected(FpsBox), NumberStyles.Integer,
+            CultureInfo.InvariantCulture, out var fps) ? fps : 0;
+        UpdateSensitivity();
 
         /* Changing the codec re-filters the Quality list: 1440p is commonly
          * published only in VP9, so a height that only one codec offers cannot
@@ -328,7 +399,82 @@ public sealed partial class DownloadsPage : Page
     {
         if (_suppressChanges) return;
         if (sender is ToggleSwitch t && t.Tag is string field) WritePass(field, t.IsOn);
+        UpdateSensitivity();
         UpdatePreview();
+    }
+
+    private void OnExtrasTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        Form.Opts.SubLangs = SubLangsBox.Text;
+        Form.SponsorCats = SponsorCatsBox.Text;
+        UpdatePreview();
+    }
+
+    private void OnChaptersToggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        Form.Opts.NoChapters = !ChaptersSwitch.IsOn;
+        UpdatePreview();
+    }
+
+    private void OnSponsorModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressChanges) return;
+        Form.SponsorMode = Selected(SponsorModeBox);
+        UpdateSensitivity();
+        UpdatePreview();
+    }
+
+    /* Every Connection change is saved and handed straight to the Runner.
+     * Saved per change rather than on commit -- unlike the destination --
+     * because a proxy typed, used for a run, and then gone on the next launch
+     * would be a setting that does not behave like one; the file is a few
+     * hundred bytes. */
+    private void ConnectionChanged()
+    {
+        if (_suppressChanges) return;
+        var st = Model.Settings;
+        st.CookiesSource = Selected(CookiesSourceBox);
+        st.CookiesBrowser = Selected(CookiesBrowserBox);
+        st.CookiesProfile = CookiesProfileBox.Text;
+        st.CookiesFile = CookiesFileBox.Text;
+        st.Proxy = ProxyBox.Text;
+        st.LimitRate = LimitRateBox.Text;
+        st.Downloader = Selected(DownloaderBox);
+        st.Save();
+        Model.Runner.SetConnection(st.Connection());
+        UpdateConnectionVisibility();
+        UpdatePreview();
+    }
+
+    private void OnConnectionSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => ConnectionChanged();
+
+    private void OnConnectionTextChanged(object sender, TextChangedEventArgs e)
+        => ConnectionChanged();
+
+    /* The same HWND initialisation as the folder picker below, for the same
+     * reason: an unpackaged desktop app must tell a WinRT picker its owner. */
+    private async void OnChooseCookieFile(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker
+            {
+                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads,
+            };
+            picker.FileTypeFilter.Add(".txt");
+            picker.FileTypeFilter.Add("*");
+            var window = App.Window;
+            if (window is null) return;
+            WinRT.Interop.InitializeWithWindow.Initialize(
+                picker, WinRT.Interop.WindowNative.GetWindowHandle(window));
+            var file = await picker.PickSingleFileAsync();
+            if (file is null) return;
+            CookiesFileBox.Text = file.Path; // TextChanged saves it
+        }
+        catch (Exception) { /* dismissed or unavailable -- nothing to change */ }
     }
 
     /* With no URL typed the preview would read ytdl "" -- which looks like a bug
@@ -337,7 +483,11 @@ public sealed partial class DownloadsPage : Page
      * the options you have set are still readable while you paste a URL. */
     private void UpdatePreview()
     {
-        var shown = Form.Opts.Clone();
+        /* What the form means, with the connection stamped on as the Runner
+         * will: the preview is the command that runs. CommandPreview masks a
+         * proxy password. */
+        var shown = Form.EffectiveOptions();
+        shown.SetConnection(Model.Settings.Connection());
         if (string.IsNullOrWhiteSpace(shown.Url)) shown.Url = "<URL>";
         PreviewText.Text = shown.CommandPreview();
     }
@@ -393,6 +543,9 @@ public sealed partial class DownloadsPage : Page
              * --cookies-from-browser is probed with it too -- a preview that
              * fails where the download would succeed is worse than none. */
             ExtraArgs = new List<string>(Form.Opts.YtdlpArgs),
+            /* Cookies and proxy only: `ytdl --probe` refuses the speed limit
+             * and the downloader, which govern moving media bytes. */
+            ConnectionArgs = Model.Settings.Connection().ConnectionArgs(forProbe: true),
         };
 
         ProbeResult result;
@@ -853,7 +1006,7 @@ public sealed partial class DownloadsPage : Page
     {
         try
         {
-            Model.Runner.Enqueue(Form.Opts);
+            Model.Runner.Enqueue(Form.EffectiveOptions());
             /* The URL is cleared; the options are not. Queueing five videos with
              * the same settings is the common case, and re-picking them each
              * time would be the wrong kind of tidy. */
@@ -1004,7 +1157,7 @@ public sealed partial class DownloadsPage : Page
 
         try
         {
-            Model.Profiles.Save(name, Form.Opts);
+            Model.Profiles.Save(name, Form.EffectiveOptions());
             Form.SelectedProfile = Model.Profiles.Active;
             RefreshProfiles();
             SetProfileStatus($"Saved “{name}”.", isError: false);
@@ -1176,6 +1329,16 @@ public sealed partial class DownloadsPage : Page
         }
 
         QueueHeader.Text = $"Queue ({state.Queue.Count})";
+        /* The queue is sequential by design and that is correct -- but thirty
+         * runs from a bulk re-fetch going one at a time look like a stuck app
+         * next to a competitor running eight at once, unless something says
+         * the wait is deliberate and where the real parallelism lives. Shown
+         * only while something is waiting. */
+        QueueNote.Text = $"{state.Queue.Count} waiting. Runs go one at a time on purpose: two "
+            + "ytdl runs at once would race on the archive's shared manifests. To download "
+            + "several videos of one playlist or channel at the same time, raise Workers "
+            + "before adding it.";
+        QueueNote.Visibility = state.Queue.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         QueueEmpty.Visibility = state.Queue.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         QueueList.Visibility = state.Queue.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         QueueList.ItemsSource = state.Queue.Select(BuildQueueRow).ToList();

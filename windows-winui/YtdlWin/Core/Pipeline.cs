@@ -81,6 +81,30 @@ public sealed class RunOptions
     public bool NoThumbnail { get; set; }
     public bool NoMetadata { get; set; }
 
+    /* The rest of the media description -- the options competitors expose as
+     * controls that this app used to reach only through the Advanced box.
+     * Each maps to one ytdl.ps1 flag and each is validated THERE. */
+    /// --fps; 0 = no ceiling.
+    public int Fps { get; set; }
+    /// --sub-langs; empty = the conf's en.*
+    public string SubLangs { get; set; } = "";
+    public bool NoChapters { get; set; }
+    public string SponsorblockMark { get; set; } = "";
+    public string SponsorblockRemove { get; set; } = "";
+
+    /* How YouTube is reached. Not content, and not chosen per run: these come
+     * from Settings and are stamped onto every run by the Runner (see
+     * Runner.SetConnection), so a download, a re-fetch from a video's page, a
+     * bulk re-fetch and a Run again all go out the same way. The form never
+     * writes them and a profile never stores them. */
+    public string CookiesFromBrowser { get; set; } = "";
+    public string CookiesFile { get; set; } = "";
+    /// May carry user:password@ -- see RedactProxy.
+    public string Proxy { get; set; } = "";
+    public string LimitRate { get; set; } = "";
+    /// empty = native
+    public string Downloader { get; set; } = "";
+
     /// Each emitted as its own --ytdlp-arg.
     public List<string> YtdlpArgs { get; set; } = new();
 
@@ -92,8 +116,86 @@ public sealed class RunOptions
         PotPort = PotPort, Mode = Mode, Quality = Quality, Codec = Codec,
         AudioCodec = AudioCodec, Container = Container, NoComments = NoComments,
         NoSubs = NoSubs, NoThumbnail = NoThumbnail, NoMetadata = NoMetadata,
+        Fps = Fps, SubLangs = SubLangs, NoChapters = NoChapters,
+        SponsorblockMark = SponsorblockMark, SponsorblockRemove = SponsorblockRemove,
+        CookiesFromBrowser = CookiesFromBrowser, CookiesFile = CookiesFile, Proxy = Proxy,
+        LimitRate = LimitRate, Downloader = Downloader,
         YtdlpArgs = new List<string>(YtdlpArgs),
     };
+
+    /// <summary>Copy the five connection fields of <paramref name="conn"/>
+    /// over this one's; null clears them.</summary>
+    public void SetConnection(RunOptions? conn)
+    {
+        CookiesFromBrowser = conn?.CookiesFromBrowser ?? "";
+        CookiesFile = conn?.CookiesFile ?? "";
+        Proxy = conn?.Proxy ?? "";
+        LimitRate = conn?.LimitRate ?? "";
+        Downloader = conn?.Downloader ?? "";
+    }
+
+    /* Clear the options that cannot apply given the rest, exactly as the form
+     * greys their controls out:
+     *
+     *   a no-media mode   -> Fps, NoChapters and both SponsorBlock lists
+     *   NoSubs            -> SubLangs
+     *   SponsorblockMark  -> NoChapters
+     *
+     * NOT validation, and not a copy of ytdl.ps1's: it refuses nothing, it
+     * only keeps the argv from carrying a value the form shows as not
+     * applying. Each rule mirrors one of ytdl.ps1's refusals, so without it a
+     * greyed-out control would fail the run with an error about an option the
+     * user cannot see. Same rules, same fixture, as the other two apps. */
+    public void DropInapplicable()
+    {
+        if (Mode is "metadata-only" or "comments-only" or "subs-only")
+        {
+            Fps = 0;
+            NoChapters = false;
+            SponsorblockMark = "";
+            SponsorblockRemove = "";
+        }
+        if (NoSubs) SubLangs = "";
+        if (IsSet(SponsorblockMark)) NoChapters = false;
+    }
+
+    /* The connection options only, as ytdl flags: cookies and proxy, plus the
+     * speed limit and downloader unless forProbe. `ytdl --probe` refuses those
+     * two -- a probe moves no media bytes for them to govern -- and takes the
+     * other three because they change what yt-dlp can SEE.
+     *
+     * The cookie FILE goes as the real path: a private copy per yt-dlp process
+     * is the pipeline's job (yt-dlp writes its jar back to the path on exit),
+     * and it can only make one if it is handed the original. */
+    public List<string> ConnectionArgs(bool forProbe)
+    {
+        var v = new List<string>();
+        PushNonDefault(v, "--cookies-from-browser", CookiesFromBrowser, "");
+        PushNonDefault(v, "--cookies", CookiesFile, "");
+        PushNonDefault(v, "--proxy", Proxy, "");
+        if (!forProbe)
+        {
+            PushNonDefault(v, "--limit-rate", LimitRate, "");
+            PushNonDefault(v, "--downloader", Downloader, "native");
+        }
+        return v;
+    }
+
+    /* socks5://me:secret@host:1080 becomes socks5:// + "***@host:1080". The
+     * userinfo ends at the LAST '@' before the first '/', so a password that
+     * itself contains an unescaped '@' is hidden whole rather than half-shown.
+     * Pinned by the same six-case fixture as the GTK and SwiftUI suites. */
+    public static string RedactProxy(string proxy)
+    {
+        var schemeEnd = proxy.IndexOf("://", StringComparison.Ordinal);
+        if (schemeEnd < 0) return proxy;
+        var start = schemeEnd + 3;
+        var slash = proxy.IndexOf('/', start);
+        var end = slash < 0 ? proxy.Length : slash;
+        var at = proxy.LastIndexOf('@', end - 1, end - start);
+        if (at < 0) return proxy;
+        return proxy[..start] + "***" + proxy[at..];
+    }
 
     private static bool IsSet(string s) => !string.IsNullOrWhiteSpace(s);
 
@@ -157,11 +259,26 @@ public sealed class RunOptions
         PushNonDefault(v, "--codec", Codec, "any");
         PushNonDefault(v, "--audio-codec", AudioCodec, "any");
         PushNonDefault(v, "--container", Container, "mkv");
+        if (Fps > 0)
+        {
+            v.Add("--fps");
+            v.Add(Fps.ToString(CultureInfo.InvariantCulture));
+        }
+        PushNonDefault(v, "--sub-langs", SubLangs, "");
+        if (NoChapters) v.Add("--no-chapters");
+        PushNonDefault(v, "--sponsorblock-mark", SponsorblockMark, "");
+        PushNonDefault(v, "--sponsorblock-remove", SponsorblockRemove, "");
 
         if (NoComments) v.Add("--no-comments");
         if (NoSubs) v.Add("--no-subs");
         if (NoThumbnail) v.Add("--no-thumbnail");
         if (NoMetadata) v.Add("--no-metadata");
+
+        /* After the content options and before the passthrough, which keeps
+         * its place at the end: a --ytdlp-arg --proxy typed into the Advanced
+         * box before this existed still reaches yt-dlp after ours and still
+         * wins. */
+        v.AddRange(ConnectionArgs(forProbe: false));
 
         /* Repeated rather than joined: ytdl.ps1 takes one value per occurrence,
          * and a real --match-filter expression contains commas and spaces, so
@@ -188,13 +305,18 @@ public sealed class RunOptions
      * doubled -- pwsh's own escape inside a double-quoted string -- rather than
      * backslash-escaped, which is what a POSIX shell would want and what would
      * quietly produce the wrong argument here. */
+    /*
+     * The one place it deliberately differs from the real argv: a proxy's
+     * user:password@ is shown as ***@. The preview is on screen, it is stored
+     * as each run's `command` in history.json, and it is the thing somebody
+     * copies into a bug report. */
     public string CommandPreview()
     {
         var s = new StringBuilder("ytdl");
         var args = ToArgs();
         for (var i = 0; i < args.Count; i++)
         {
-            var arg = args[i];
+            var arg = i > 0 && args[i - 1] == "--proxy" ? RedactProxy(args[i]) : args[i];
             s.Append(' ');
             if (i == 0 || arg.Any(c => c is ' ' or '\t' or '"' or '\'' or '`' or '$' or ';'))
             {
@@ -258,6 +380,21 @@ public sealed class RunOptions
         w.WriteBoolean("no_subs", NoSubs);
         w.WriteBoolean("no_thumbnail", NoThumbnail);
         w.WriteBoolean("no_metadata", NoMetadata);
+        w.WriteNumber("fps", Fps);
+        WriteIfSet(w, "sub_langs", SubLangs);
+        w.WriteBoolean("no_chapters", NoChapters);
+        WriteIfSet(w, "sponsorblock_mark", SponsorblockMark);
+        WriteIfSet(w, "sponsorblock_remove", SponsorblockRemove);
+        /* The connection fields are written too, so a queue restored after a
+         * restart runs the way it was queued. That puts a proxy password, if
+         * the proxy has one, into queue.json and history.json -- in the
+         * per-user %LOCALAPPDATA%, beside settings.json, which holds it
+         * already. The `command` stored alongside is the masked preview. */
+        WriteIfSet(w, "cookies_from_browser", CookiesFromBrowser);
+        WriteIfSet(w, "cookies_file", CookiesFile);
+        WriteIfSet(w, "proxy", Proxy);
+        WriteIfSet(w, "limit_rate", LimitRate);
+        WriteIfSet(w, "downloader", Downloader);
 
         w.WriteStartArray("ytdlp_args");
         foreach (var a in YtdlpArgs) w.WriteStringValue(a);
@@ -300,6 +437,16 @@ public sealed class RunOptions
         o.NoSubs = e.Bool("no_subs");
         o.NoThumbnail = e.Bool("no_thumbnail");
         o.NoMetadata = e.Bool("no_metadata");
+        o.Fps = (int)e.Int("fps");
+        o.SubLangs = e.Str("sub_langs") ?? "";
+        o.NoChapters = e.Bool("no_chapters");
+        o.SponsorblockMark = e.Str("sponsorblock_mark") ?? "";
+        o.SponsorblockRemove = e.Str("sponsorblock_remove") ?? "";
+        o.CookiesFromBrowser = e.Str("cookies_from_browser") ?? "";
+        o.CookiesFile = e.Str("cookies_file") ?? "";
+        o.Proxy = e.Str("proxy") ?? "";
+        o.LimitRate = e.Str("limit_rate") ?? "";
+        o.Downloader = e.Str("downloader") ?? "";
         o.YtdlpArgs = e.Strings("ytdlp_args");
         return o;
     }

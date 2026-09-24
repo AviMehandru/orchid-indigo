@@ -688,6 +688,31 @@ public sealed class ProbeRequest
     /// --cookies-from-browser can be probed at all.
     /// </summary>
     public List<string> ExtraArgs { get; set; } = new();
+
+    /// <summary>
+    /// The Connection settings as ytdl flags --
+    /// <c>settings.Connection().ConnectionArgs(forProbe: true)</c>, so cookies
+    /// and proxy only. A preview taken signed out, or not through the proxy,
+    /// describes a different video from the one the download will get.
+    /// </summary>
+    public List<string> ConnectionArgs { get; set; } = new();
+
+    /* The connection flags are spelled the same in ytdl and in yt-dlp, so the
+     * fallback can use them directly -- except --cookies FILE, which is
+     * dropped: yt-dlp writes its jar back to that path on exit, and only the
+     * pipeline knows to hand it a private copy instead. A pipeline too old for
+     * --probe is too old for --cookies as well. */
+    public List<string> YtdlpConnectionArgs()
+    {
+        var output = new List<string>();
+        for (var i = 0; i + 1 < ConnectionArgs.Count; i += 2)
+        {
+            if (ConnectionArgs[i] == "--cookies") continue;
+            output.Add(ConnectionArgs[i]);
+            output.Add(ConnectionArgs[i + 1]);
+        }
+        return output;
+    }
 }
 
 public sealed class ProbeResult
@@ -853,6 +878,7 @@ public static class ProbeRunner
             args.Add("--pot-port");
             args.Add(request.PotPort.ToString(CultureInfo.InvariantCulture));
         }
+        args.AddRange(request.ConnectionArgs);
         foreach (var a in request.ExtraArgs)
         {
             args.Add("--ytdlp-arg");
@@ -902,6 +928,7 @@ public static class ProbeRunner
 
         var flatArgs = new List<string> { "-J" };
         flatArgs.AddRange(baseArgs);
+        flatArgs.AddRange(request.YtdlpConnectionArgs());
         flatArgs.AddRange(request.ExtraArgs);
         flatArgs.AddRange(new[] { "--flat-playlist", "--playlist-items", itemSpec });
         /* The end-of-options marker, same as every call site in the pipeline:
@@ -940,6 +967,7 @@ public static class ProbeRunner
 
         var fullArgs = new List<string> { "-J" };
         fullArgs.AddRange(baseArgs);
+        fullArgs.AddRange(request.YtdlpConnectionArgs());
         fullArgs.AddRange(request.ExtraArgs);
         fullArgs.Add("--no-playlist");
         fullArgs.Add("--");

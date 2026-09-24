@@ -234,6 +234,144 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(RunOptions.fromJSON(nil), RunOptions())
     }
 
+    // MARK: - The options that used to be reachable only through Advanced
+
+    func testMediaOptionsEmitInOrder() {
+        var o = RunOptions()
+        o.url = "u"
+        o.container = "mkv"
+        o.fps = 30
+        o.subLangs = "en.*,de"
+        o.noChapters = true
+        o.sponsorblockRemove = "sponsor,selfpromo"
+        XCTAssertEqual(args(o),
+                       "u|--fps|30|--sub-langs|en.*,de|--no-chapters|"
+                       + "--sponsorblock-remove|sponsor,selfpromo")
+    }
+
+    func testNewOptionsDefaultToNothing() {
+        var o = RunOptions()
+        o.url = "u"
+        o.subLangs = "   "
+        o.downloader = "native"
+        XCTAssertEqual(args(o), "u")
+    }
+
+    /* After every content option and before the passthrough, so a
+     * --ytdlp-arg --proxy from before these existed still comes last and
+     * still wins. */
+    func testConnectionOptionsEmitBeforePassthrough() {
+        var o = RunOptions()
+        o.url = "u"
+        o.noSubs = true
+        o.cookiesFromBrowser = "firefox:default"
+        o.proxy = "socks5://u:pw@h:1080"
+        o.limitRate = "2M"
+        o.downloader = "aria2c"
+        o.ytdlpArgs = ["--proxy"]
+        XCTAssertEqual(args(o),
+                       "u|--no-subs|--cookies-from-browser|firefox:default|"
+                       + "--proxy|socks5://u:pw@h:1080|--limit-rate|2M|"
+                       + "--downloader|aria2c|--ytdlp-arg|--proxy")
+    }
+
+    func testProbeGetsCookiesAndProxyOnly() {
+        var o = RunOptions()
+        o.cookiesFile = "/Users/me/cookies.txt"
+        o.proxy = "http://p:3128"
+        o.limitRate = "2M"
+        o.downloader = "aria2c"
+        XCTAssertEqual(o.connectionArgs(forProbe: true).joined(separator: "|"),
+                       "--cookies|/Users/me/cookies.txt|--proxy|http://p:3128")
+        XCTAssertEqual(o.connectionArgs(forProbe: false).joined(separator: "|"),
+                       "--cookies|/Users/me/cookies.txt|--proxy|http://p:3128|"
+                       + "--limit-rate|2M|--downloader|aria2c")
+    }
+
+    /// Shared fixture: the GTK and WinUI suites assert these same six pairs.
+    func testRedactProxy() {
+        let cases: [(String, String)] = [
+            ("socks5://me:hunter2@127.0.0.1:1080", "socks5://***@127.0.0.1:1080"),
+            ("http://user@proxy:3128", "http://***@proxy:3128"),
+            ("http://proxy:3128", "http://proxy:3128"),
+            ("https://a:b@c@host:1/", "https://***@host:1/"),
+            ("socks5h://u:p@[::1]:1080", "socks5h://***@[::1]:1080"),
+            ("not a url", "not a url"),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(RunOptions.redactProxy(input), expected, input)
+        }
+    }
+
+    func testPreviewMasksTheProxyPasswordAndArgvDoesNot() {
+        var o = RunOptions()
+        o.url = "u"
+        o.proxy = "socks5://me:hunter2@h:1080"
+        let cmd = o.commandPreview()
+        XCTAssertFalse(cmd.contains("hunter2"))
+        XCTAssertTrue(cmd.contains("--proxy socks5://***@h:1080"))
+        XCTAssertTrue(args(o).contains("socks5://me:hunter2@h:1080"),
+                      "the real argv must carry it whole")
+    }
+
+    /// The rules the form's greyed-out rows follow. Shared fixture with the
+    /// GTK and WinUI suites, row for row.
+    func testDropInapplicable() {
+        var a = RunOptions()
+        a.mode = "comments-only"
+        a.fps = 30
+        a.noChapters = true
+        a.sponsorblockMark = "all"
+        a.sponsorblockRemove = "sponsor"
+        a.subLangs = "de"
+        a.proxy = "http://p:1"
+        a.dropInapplicable()
+        XCTAssertEqual(a.fps, 0)
+        XCTAssertFalse(a.noChapters)
+        XCTAssertEqual(a.sponsorblockMark, "")
+        XCTAssertEqual(a.sponsorblockRemove, "")
+        XCTAssertEqual(a.subLangs, "de", "subtitles are written in every mode")
+        XCTAssertEqual(a.proxy, "http://p:1", "the connection is not the form's to drop")
+
+        var b = RunOptions()
+        b.noSubs = true
+        b.subLangs = "de"
+        b.dropInapplicable()
+        XCTAssertEqual(b.subLangs, "")
+
+        var c = RunOptions()
+        c.mode = "full"
+        c.noChapters = true
+        c.sponsorblockMark = "all"
+        c.dropInapplicable()
+        XCTAssertFalse(c.noChapters, "marking needs chapters, so it wins")
+        XCTAssertEqual(c.sponsorblockMark, "all")
+
+        var d = RunOptions()
+        d.mode = "audio-only"
+        d.fps = 60
+        d.noChapters = true
+        d.sponsorblockRemove = "sponsor"
+        d.dropInapplicable()
+        XCTAssertEqual(d.fps, 60)
+        XCTAssertTrue(d.noChapters)
+        XCTAssertEqual(d.sponsorblockRemove, "sponsor")
+    }
+
+    func testNewFieldsRoundTripJSON() {
+        var o = RunOptions()
+        o.url = "u"
+        o.fps = 60
+        o.subLangs = "all,-live_chat"
+        o.noChapters = true
+        o.sponsorblockMark = "all,-filler"
+        o.cookiesFile = "/c.txt"
+        o.proxy = "http://p:1"
+        o.limitRate = "500K"
+        o.downloader = "aria2c"
+        XCTAssertEqual(RunOptions.fromJSON(o.toJSON()), o)
+    }
+
     func testLogTail() throws {
         let dir = try FixtureSupport.makeTempDir(prefix: "ytdl-macos-tail")
         defer { try? FileManager.default.removeItem(atPath: dir) }

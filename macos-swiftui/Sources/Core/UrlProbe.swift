@@ -728,6 +728,28 @@ enum UrlProbeRunner {
         /// The Advanced box, one argument per element, so a URL that needs
         /// --cookies-from-browser can be probed at all.
         var extraArgs: [String] = []
+        /// The Connection settings as ytdl flags --
+        /// `settings.connection().connectionArgs(forProbe: true)`, so cookies
+        /// and proxy only. A preview taken signed out, or not through the
+        /// proxy, describes a different video from the one the download gets.
+        var connectionArgs: [String] = []
+
+        /* The connection flags are spelled the same in ytdl and in yt-dlp, so
+         * the fallback can use them directly -- except --cookies FILE, which
+         * is dropped: yt-dlp writes its jar back to that path on exit, and
+         * only the pipeline knows to hand it a private copy instead. A
+         * pipeline too old for --probe is too old for --cookies as well. */
+        var ytdlpConnectionArgs: [String] {
+            var out: [String] = []
+            var i = 0
+            while i + 1 < connectionArgs.count {
+                if connectionArgs[i] != "--cookies" {
+                    out += [connectionArgs[i], connectionArgs[i + 1]]
+                }
+                i += 2
+            }
+            return out
+        }
     }
 
     enum RunError: LocalizedError {
@@ -819,6 +841,7 @@ enum UrlProbeRunner {
             args.append("--pot-port")
             args.append("\(request.potPort)")
         }
+        args += request.connectionArgs
         for a in request.extraArgs {
             args.append("--ytdlp-arg")
             args.append(a)
@@ -859,7 +882,7 @@ enum UrlProbeRunner {
             : request.items.trimmingCharacters(in: .whitespaces)
         let url = RunOptions.normalizeURL(request.url)
 
-        var flatArgs = ["-J"] + base + request.extraArgs
+        var flatArgs = ["-J"] + base + request.ytdlpConnectionArgs + request.extraArgs
         flatArgs += ["--flat-playlist", "--playlist-items", itemSpec]
         /* The end-of-options marker, same as every call site in the pipeline:
          * about one YouTube id in thirty starts with "-" or "_". */
@@ -885,7 +908,7 @@ enum UrlProbeRunner {
             }
         }
 
-        var fullArgs = ["-J"] + base + request.extraArgs
+        var fullArgs = ["-J"] + base + request.ytdlpConnectionArgs + request.extraArgs
         fullArgs += ["--no-playlist", "--", target]
 
         guard let fullCap = capture(executable: ytdlp, arguments: fullArgs,

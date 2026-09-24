@@ -37,6 +37,12 @@ final class DownloadsModel: ObservableObject {
     /// to split a single-line field on.
     @Published var extraArgsText = ""
     @Published var selectedProfile: String?
+    /* SponsorBlock is one choice -- off, mark, or cut -- plus one category
+     * list, and the two RunOptions fields it becomes are derived from those in
+     * `runOptions`. Kept apart so that switching the mode off and on again
+     * does not make anybody retype a list. */
+    @Published var sponsorMode = "off"
+    @Published var sponsorCats = "sponsor"
     @Published var status = ""
     @Published var statusIsError = false
 
@@ -101,6 +107,21 @@ final class DownloadsModel: ObservableObject {
         opts.noSubs = p.noSubs
         opts.noThumbnail = p.noThumbnail
         opts.noMetadata = p.noMetadata
+        opts.fps = p.fps
+        opts.subLangs = p.subLangs
+        opts.noChapters = p.noChapters
+        /* A profile written before these existed has neither list, which
+         * reads as SponsorBlock off -- the behaviour it always had. The
+         * category field keeps whatever it held. */
+        if !p.sponsorblockRemove.isEmpty {
+            sponsorMode = "remove"
+            sponsorCats = p.sponsorblockRemove
+        } else if !p.sponsorblockMark.isEmpty {
+            sponsorMode = "mark"
+            sponsorCats = p.sponsorblockMark
+        } else {
+            sponsorMode = "off"
+        }
 
         /* The destination is part of the profile, but an empty one must not wipe
          * a destination the user has set for this session. */
@@ -108,6 +129,30 @@ final class DownloadsModel: ObservableObject {
 
         extraArgsText = p.ytdlpArgs.joined(separator: "\n")
         opts.ytdlpArgs = p.ytdlpArgs
+    }
+
+    /* What the form MEANS, as opposed to what its controls hold: the
+     * SponsorBlock choice folded into its two fields, and whatever the form is
+     * showing greyed out dropped (RunOptions.dropInapplicable). This is what
+     * is queued, previewed and saved as a profile. The connection is not here
+     * -- the Runner stamps it on at enqueue. */
+    var runOptions: RunOptions {
+        var o = opts
+        var cats = sponsorCats.trimmingCharacters(in: .whitespacesAndNewlines)
+        /* An empty list with a mode chosen is sent as "sponsor" rather than
+         * dropped: the picker says SponsorBlock is on, and a run that quietly
+         * did nothing about it would contradict the form. */
+        if cats.isEmpty { cats = "sponsor" }
+        o.sponsorblockMark = sponsorMode == "mark" ? cats : ""
+        o.sponsorblockRemove = sponsorMode == "remove" ? cats : ""
+        o.dropInapplicable()
+        return o
+    }
+
+    /// Mirrors RunOptions.dropInapplicable rule for rule: the one decides what
+    /// is greyed out, the other what is sent.
+    var mediaOptionsApply: Bool {
+        !["metadata-only", "comments-only", "subs-only"].contains(opts.mode)
     }
 
     func setStatus(_ text: String, isError: Bool) {
@@ -134,7 +179,9 @@ final class DownloadsModel: ObservableObject {
         selectedItems = []
     }
 
-    func startProbe() {
+    /// `connection` is `settings.connection()` -- cookies and proxy change
+    /// what yt-dlp can see, so the preview has to use them too.
+    func startProbe(connection: RunOptions) {
         /* A second press while one is running cancels it rather than starting
          * a race between two answers for the same form. */
         if probeRunning {
@@ -164,7 +211,10 @@ final class DownloadsModel: ObservableObject {
             /* The same list the run would send, so a URL that needs
              * --cookies-from-browser is probed with it too -- a preview that
              * fails where the download would succeed is worse than none. */
-            extraArgs: opts.ytdlpArgs
+            extraArgs: opts.ytdlpArgs,
+            /* Cookies and proxy only: `ytdl --probe` refuses the speed limit
+             * and the downloader, which govern moving media bytes. */
+            connectionArgs: connection.connectionArgs(forProbe: true)
         )
 
         UrlProbeRunner.run(request, cancellation: token) { [weak self] result in
@@ -341,6 +391,8 @@ struct DownloadsView: View {
             previewSection
             formatSection
             passesSection
+            extrasSection
+            connectionSection
             advancedSection
         }
         .formStyle(.grouped)
@@ -415,7 +467,7 @@ struct DownloadsView: View {
                     }
 
                 Button {
-                    form.startProbe()
+                    form.startProbe(connection: settings.connection())
                 } label: {
                     Label(form.probeRunning ? "Stop" : "Preview",
                           systemImage: form.probeRunning ? "stop.circle" : "magnifyingglass")
@@ -762,6 +814,19 @@ struct DownloadsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            /* A CEILING, the same shape as Quality: ytdl --fps is a predicate
+             * with a fallback. Three values, because at most 60 already
+             * admits 50 and at most 30 already admits 25 and 24. */
+            Picker("Frame rate", selection: $form.opts.fps) {
+                Text("Any").tag(0)
+                Text("≤ 60 fps").tag(60)
+                Text("≤ 30 fps").tag(30)
+            }
+            .disabled(!form.mediaOptionsApply)
+            Text("A ceiling, like Quality. On a 60 fps upload, ≤ 30 can mean 480p.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Stepper(
                 "Workers: \(max(1, form.opts.workers))",
                 value: Binding(
@@ -821,6 +886,141 @@ struct DownloadsView: View {
         }
     }
 
+    /* Greyed out rather than hidden when they cannot apply, so the value is
+     * still visible and comes back with the mode. */
+    private var extrasSection: some View {
+        Section("Subtitles, chapters and SponsorBlock") {
+            /* Free text rather than a picker, because yt-dlp's own syntax is
+             * the thing worth exposing -- regexes, exclusions, "all" -- and a
+             * picker would need a language list only a probe knows. */
+            TextField("Subtitle languages — empty means English (en.*); e.g. en.*,de,-live_chat",
+                      text: $form.opts.subLangs)
+                .textFieldStyle(.roundedBorder)
+                .disabled(form.opts.noSubs)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Embed chapters", isOn: Binding(
+                    get: { !form.opts.noChapters || form.sponsorMode == "mark" },
+                    set: { form.opts.noChapters = !$0 }
+                ))
+                .disabled(!form.mediaOptionsApply || form.sponsorMode == "mark")
+                Text("Chapter markers inside the media file. They are kept in the info.json "
+                     + "either way.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("SponsorBlock", selection: $form.sponsorMode) {
+                Text("Off").tag("off")
+                Text("Mark as chapters").tag("mark")
+                Text("Cut out of the file").tag("remove")
+            }
+            .disabled(!form.mediaOptionsApply)
+            Text("Cutting changes the archived file: it is no longer the one YouTube served. "
+                 + "The uncut streams stay in Pre-merge streams, and the manifest records the cut.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("SponsorBlock categories — e.g. sponsor,selfpromo,intro or all",
+                      text: $form.sponsorCats)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!form.mediaOptionsApply || form.sponsorMode == "off")
+        }
+    }
+
+    /* Settings, not per run and not in a profile. Every change is saved and
+     * handed straight to the Runner, which stamps it onto every run the app
+     * starts. Saved per change rather than on submit -- unlike the
+     * destination -- because a proxy typed, used for a run, and then gone on
+     * the next launch would be a setting that does not behave like one; the
+     * file is a few hundred bytes. */
+    private var connectionSection: some View {
+        Section {
+            Picker("Cookies", selection: $settings.cookiesSource) {
+                Text("None").tag("none")
+                Text("From a browser").tag("browser")
+                Text("From a cookies.txt file").tag("file")
+            }
+            Text("For members-only, age-restricted and private videos, and YouTube Premium's "
+                 + "higher bitrate.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if settings.cookiesSource == "browser" {
+                Picker("Browser", selection: $settings.cookiesBrowser) {
+                    ForEach(DownloadsView.browsers.indices, id: \.self) { i in
+                        Text(DownloadsView.browsers[i].1).tag(DownloadsView.browsers[i].0)
+                    }
+                }
+                Text("Safari's cookies can only be read once this app has Full Disk Access "
+                     + "(System Settings → Privacy & Security).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Browser profile — empty means the default",
+                          text: $settings.cookiesProfile)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if settings.cookiesSource == "file" {
+                HStack {
+                    TextField("cookies.txt — read, never written; each run gets a private copy",
+                              text: $settings.cookiesFile)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…") { chooseCookieFile() }
+                }
+            }
+
+            TextField("Proxy — e.g. socks5h://127.0.0.1:1080; a password is masked in logs",
+                      text: $settings.proxy)
+                .textFieldStyle(.roundedBorder)
+            TextField("Speed limit — bytes per second, e.g. 2M; per worker; empty means none",
+                      text: $settings.limitRate)
+                .textFieldStyle(.roundedBorder)
+            Picker("Downloader", selection: $settings.downloader) {
+                Text("Built in").tag("native")
+                Text("aria2c").tag("aria2c")
+            }
+            Text("aria2c must be installed, and reports no progress here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Connection")
+        } footer: {
+            Text("Saved as you change it, and used by every run this app starts — downloads, "
+                 + "previews and re-fetches alike. Not part of a profile.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onChange(of: settings.cookiesSource) { _ in connectionChanged() }
+        .onChange(of: settings.cookiesBrowser) { _ in connectionChanged() }
+        .onChange(of: settings.cookiesProfile) { _ in connectionChanged() }
+        .onChange(of: settings.cookiesFile) { _ in connectionChanged() }
+        .onChange(of: settings.proxy) { _ in connectionChanged() }
+        .onChange(of: settings.limitRate) { _ in connectionChanged() }
+        .onChange(of: settings.downloader) { _ in connectionChanged() }
+    }
+
+    /// yt-dlp's --cookies-from-browser names. Safari first: this is the Mac.
+    fileprivate static let browsers: [(String, String)] = [
+        ("safari", "Safari"), ("chrome", "Chrome"), ("firefox", "Firefox"),
+        ("brave", "Brave"), ("edge", "Edge"), ("chromium", "Chromium"),
+        ("opera", "Opera"), ("vivaldi", "Vivaldi"), ("whale", "Whale"),
+    ]
+
+    private func connectionChanged() {
+        settings.save()
+        runner.setConnection(settings.connection())
+    }
+
+    private func chooseCookieFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose a cookies.txt file"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.cookiesFile = url.path
+    }
+
     private var advancedSection: some View {
         Section("Advanced") {
             VStack(alignment: .leading, spacing: 4) {
@@ -855,7 +1055,10 @@ struct DownloadsView: View {
      * cleared the box. A placeholder keeps the rest of the command visible, so
      * the options you have set are still readable while you paste a URL. */
     private var previewCommand: String {
-        var shown = form.opts
+        /* With the connection stamped on, as the Runner will: the preview is
+         * the command that runs. commandPreview masks a proxy password. */
+        var shown = form.runOptions
+        shown.setConnection(from: settings.connection())
         if shown.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             shown.url = "<URL>"
         }
@@ -924,6 +1127,20 @@ struct DownloadsView: View {
     private var queueList: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Queue (\(runner.queue.count))").font(.headline)
+            /* The queue is sequential by design and that is correct -- but
+             * thirty runs from a bulk re-fetch going one at a time look like
+             * a stuck app next to a competitor running eight at once, unless
+             * something says the wait is deliberate and where the real
+             * parallelism lives. Shown only while something is waiting. */
+            if !runner.queue.isEmpty {
+                Text("\(runner.queue.count) waiting. Runs go one at a time on purpose: two ytdl "
+                     + "runs at once would race on the archive's shared manifests. To download "
+                     + "several videos of one playlist or channel at the same time, raise "
+                     + "Workers before adding it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if runner.queue.isEmpty {
                 Text("Nothing queued. Paste a URL above and press Add to queue.")
                     .font(.caption)
@@ -979,7 +1196,7 @@ struct DownloadsView: View {
 
     private func addToQueue() {
         do {
-            try runner.enqueue(form.opts)
+            try runner.enqueue(form.runOptions)
             /* The URL is cleared; the options are not. Queueing five videos with
              * the same settings is the common case, and re-picking them each
              * time would be the wrong kind of tidy. */
@@ -1035,7 +1252,7 @@ struct DownloadsView: View {
                 form.selectedProfile = store.active
                 form.setStatus("Renamed to “\(typed)”.", isError: false)
             } else {
-                try store.save(name: typed, opts: form.opts)
+                try store.save(name: typed, opts: form.runOptions)
                 form.selectedProfile = store.active
                 form.setStatus("Saved “\(typed)”.", isError: false)
             }

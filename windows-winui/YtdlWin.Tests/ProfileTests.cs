@@ -22,6 +22,103 @@ public sealed class ProfileTests : IDisposable
     public ProfileTests() => _home = new RedirectedHome("ytdl-win-profiles");
     public void Dispose() => _home.Dispose();
 
+    // MARK: - The Connection settings
+
+    /* A profile is a preset for WHAT to download. A cookie source or a proxy
+     * is a setting, stamped onto every run by the Runner; a profile carrying
+     * one would bring back a proxy you have since changed, and put its
+     * password into profiles.json. */
+    [Fact]
+    public void ProfilesNeverStoreTheConnection()
+    {
+        var o = new RunOptions
+        {
+            Mode = "audio-only", SponsorblockMark = "all", Proxy = "socks5://u:secret@h:1",
+            CookiesFromBrowser = "firefox", LimitRate = "1M",
+        };
+        var store = ProfileStore.Load();
+        store.Save("P", o);
+
+        var text = System.IO.File.ReadAllText(Paths.Join(Paths.StateDir(), "profiles.json"));
+        Assert.DoesNotContain("secret", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("firefox", text, StringComparison.Ordinal);
+        Assert.Contains("sponsorblock_mark", text, StringComparison.Ordinal);
+
+        var p = Assert.Single(ProfileStore.Load().Profiles);
+        Assert.Equal("", p.Opts.Proxy);
+        Assert.Equal("", p.Opts.CookiesFromBrowser);
+        Assert.Equal("", p.Opts.LimitRate);
+        Assert.Equal("all", p.Opts.SponsorblockMark);
+    }
+
+    [Fact]
+    public void SettingsConnectionRoundTripsAndResolves()
+    {
+        var s = Settings.Load();
+        s.CookiesSource = "browser";
+        s.CookiesBrowser = "chrome";
+        s.CookiesProfile = "Profile 1";
+        s.CookiesFile = "~/cookies.txt";
+        s.Proxy = "  http://u:pw@p:3128  ";
+        s.LimitRate = "2M";
+        s.Downloader = "native";
+        s.Save();
+
+        var again = Settings.Load();
+        var c = again.Connection();
+        Assert.Equal("chrome:Profile 1", c.CookiesFromBrowser);
+        Assert.Equal("", c.CookiesFile);
+        Assert.Equal("http://u:pw@p:3128", c.Proxy);
+        Assert.Equal("2M", c.LimitRate);
+        Assert.Equal("", c.Downloader);          // native is the default and is not sent
+
+        again.CookiesSource = "file";
+        var f = again.Connection();
+        Assert.Equal("", f.CookiesFromBrowser);
+        Assert.StartsWith(_home.Root, f.CookiesFile, StringComparison.Ordinal);
+        Assert.EndsWith("cookies.txt", f.CookiesFile, StringComparison.Ordinal);
+
+        again.CookiesFile = "";
+        Assert.Equal("", again.Connection().CookiesFile);   // nothing chosen emits nothing
+    }
+
+    /* The Runner, not each caller, applies the connection -- so every path
+     * that enqueues goes out the same way, and Run again uses the proxy you
+     * have NOW. */
+    [Fact]
+    public void RunnerStampsTheCurrentConnection()
+    {
+        var runner = new Runner();
+        runner.SetConnection(new RunOptions { Proxy = "http://u:pw@new:1", CookiesFromBrowser = "firefox" });
+
+        runner.Enqueue(new RunOptions
+        {
+            Url = "https://youtu.be/abcdefghijk", Mode = "comments-only", Refresh = true,
+            Proxy = "http://old:1",
+        });
+        var queued = Assert.Single(runner.CurrentState().Queue);
+        Assert.Equal("http://u:pw@new:1", queued.Opts.Proxy);
+        Assert.Equal("firefox", queued.Opts.CookiesFromBrowser);
+        Assert.DoesNotContain("pw@", queued.Command, StringComparison.Ordinal);
+        Assert.Contains("--cookies-from-browser firefox", queued.Command, StringComparison.Ordinal);
+
+        runner.SetConnection(null);
+        runner.Enqueue(new RunOptions { Url = "https://youtu.be/abcdefghijk", Proxy = "http://old:1" });
+        Assert.Equal("", runner.CurrentState().Queue[1].Opts.Proxy);
+
+        /* The queue is persisted on a thread-pool thread against whatever home
+         * is current AT WRITE TIME; wait for it here, inside the redirected
+         * home, rather than let it land in the real one after Dispose. */
+        var qpath = Paths.Join(Paths.StateDir(), "queue.json");
+        for (var i = 0; i < 100; i++)
+        {
+            if (System.IO.File.Exists(qpath)
+                && Runner.ReadRecords(qpath).Count == 2) break;
+            System.Threading.Thread.Sleep(20);
+        }
+        Assert.Equal(2, Runner.ReadRecords(qpath).Count);
+    }
+
     private static RunOptions SampleOptions() => new()
     {
         Url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",

@@ -36,6 +36,24 @@ final class Settings: ObservableObject {
     /// wants to see when the window opens is what arrived last.
     @Published var librarySortDescending: Bool = true
 
+    /* How YouTube is reached: the Connection section on the Downloads pane.
+     *
+     * Settings, not form fields and not profile fields. A cookie source or a
+     * proxy is a fact about you and your network, not about the video you are
+     * about to download -- so it is kept once, here, and the Runner stamps it
+     * onto every run the app starts. The cookie SOURCE is stored apart from
+     * the two values it chooses between, so flipping to "none" and back does
+     * not lose a browser profile or a path somebody typed once. */
+    /// "none" | "browser" | "file"
+    @Published var cookiesSource: String = "none"
+    @Published var cookiesBrowser: String = "safari"
+    @Published var cookiesProfile: String = ""
+    @Published var cookiesFile: String = ""
+    @Published var proxy: String = ""
+    @Published var limitRate: String = ""
+    /// "native" | "aria2c"
+    @Published var downloader: String = "native"
+
     private static func path() -> String {
         Paths.join(Paths.stateDir(), "settings.json")
     }
@@ -54,7 +72,37 @@ final class Settings: ObservableObject {
         s.librarySortDescending = obj["library_sort_descending"] == nil
             ? true
             : obj.bool("library_sort_descending")
+        s.cookiesSource = obj.str("cookies_source").flatMap { $0.isEmpty ? nil : $0 } ?? "none"
+        s.cookiesBrowser = obj.str("cookies_browser").flatMap { $0.isEmpty ? nil : $0 } ?? "safari"
+        s.cookiesProfile = obj.str("cookies_profile") ?? ""
+        s.cookiesFile = obj.str("cookies_file") ?? ""
+        s.proxy = obj.str("proxy") ?? ""
+        s.limitRate = obj.str("limit_rate") ?? ""
+        s.downloader = obj.str("downloader").flatMap { $0.isEmpty ? nil : $0 } ?? "native"
         return s
+    }
+
+    /* The connection settings as a RunOptions with only its five connection
+     * fields set -- the shape Runner.setConnection and the probe take. The
+     * cookie source decides which of browser/file is emitted; a source whose
+     * value is empty emits nothing rather than a flag with no argument. */
+    func connection() -> RunOptions {
+        func trimmed(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var o = RunOptions()
+        if cookiesSource == "browser", !trimmed(cookiesBrowser).isEmpty {
+            let profile = trimmed(cookiesProfile)
+            o.cookiesFromBrowser = profile.isEmpty
+                ? trimmed(cookiesBrowser)
+                : "\(trimmed(cookiesBrowser)):\(profile)"
+        } else if cookiesSource == "file", !trimmed(cookiesFile).isEmpty {
+            /* Expanded here for the same reason --path is: ytdl.ps1 has no
+             * notion of "~". */
+            o.cookiesFile = Paths.expandTilde(trimmed(cookiesFile))
+        }
+        o.proxy = trimmed(proxy)
+        o.limitRate = trimmed(limitRate)
+        o.downloader = downloader == "native" ? "" : downloader
+        return o
     }
 
     func save() {
@@ -64,8 +112,17 @@ final class Settings: ObservableObject {
             "default_workers": defaultWorkers,
             "library_sort": librarySort,
             "library_sort_descending": librarySortDescending,
+            "cookies_source": cookiesSource,
+            "cookies_browser": cookiesBrowser,
+            "cookies_profile": cookiesProfile,
+            "cookies_file": cookiesFile,
+            "proxy": proxy,
+            "limit_rate": limitRate,
+            "downloader": downloader,
         ]
-        AtomicFile.write(JSONFile.data(from: obj), to: Settings.path())
+        /* Owner-only, because since the Connection settings this file can
+         * hold a proxy password. */
+        AtomicFile.write(JSONFile.data(from: obj), to: Settings.path(), ownerOnly: true)
     }
 
     /// The data root as a real path: the configured value with ~ expanded, or

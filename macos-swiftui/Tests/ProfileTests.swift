@@ -291,6 +291,106 @@ final class ProfileTests: XCTestCase {
         XCTAssertTrue(again.resolvedDataRoot.hasSuffix("/Movies/yt-dlp"))
     }
 
+    // MARK: - The Connection settings
+
+    /* A profile is a preset for WHAT to download. A cookie source or a proxy
+     * is a setting, stamped onto every run by the Runner; a profile carrying
+     * one would bring back a proxy you have since changed, and put its
+     * password into profiles.json. */
+    func testProfilesNeverStoreTheConnection() throws {
+        var o = RunOptions()
+        o.mode = "audio-only"
+        o.sponsorblockMark = "all"
+        o.proxy = "socks5://u:secret@h:1"
+        o.cookiesFromBrowser = "firefox"
+        o.limitRate = "1M"
+
+        let store = ProfileStore.load()
+        try store.save(name: "P", opts: o)
+
+        let text = try String(contentsOfFile: Paths.join(Paths.stateDir(), "profiles.json"),
+                              encoding: .utf8)
+        XCTAssertFalse(text.contains("secret"))
+        XCTAssertFalse(text.contains("firefox"))
+        XCTAssertTrue(text.contains("sponsorblock_mark"), "the content options ARE profiled")
+
+        let p = try XCTUnwrap(ProfileStore.load().profile(named: "P"))
+        XCTAssertEqual(p.opts.proxy, "")
+        XCTAssertEqual(p.opts.cookiesFromBrowser, "")
+        XCTAssertEqual(p.opts.limitRate, "")
+        XCTAssertEqual(p.opts.sponsorblockMark, "all")
+    }
+
+    func testSettingsConnectionRoundTripsAndResolves() throws {
+        let s = Settings.load()
+        s.cookiesSource = "browser"
+        s.cookiesBrowser = "chrome"
+        s.cookiesProfile = "Profile 1"
+        s.cookiesFile = "~/cookies.txt"
+        s.proxy = "  http://u:pw@p:3128  "
+        s.limitRate = "2M"
+        s.downloader = "native"
+        s.save()
+
+        /* settings.json can hold a proxy password now, so it is owner-only. */
+        let path = Paths.join(Paths.stateDir(), "settings.json")
+        let attrs = try FileManager.default.attributesOfItem(atPath: path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+        let again = Settings.load()
+        let c = again.connection()
+        XCTAssertEqual(c.cookiesFromBrowser, "chrome:Profile 1")
+        XCTAssertEqual(c.cookiesFile, "")
+        XCTAssertEqual(c.proxy, "http://u:pw@p:3128")
+        XCTAssertEqual(c.limitRate, "2M")
+        XCTAssertEqual(c.downloader, "", "native is the pipeline's default and is not sent")
+
+        again.cookiesSource = "file"
+        let f = again.connection()
+        XCTAssertEqual(f.cookiesFromBrowser, "")
+        XCTAssertTrue(f.cookiesFile.hasPrefix("/"))
+        XCTAssertTrue(f.cookiesFile.hasSuffix("/cookies.txt"))
+
+        again.cookiesFile = ""
+        XCTAssertEqual(again.connection().cookiesFile, "",
+                       "a source with nothing chosen emits nothing")
+    }
+
+    /* The Runner, not each caller, applies the connection -- so every path
+     * that enqueues goes out the same way, and Run again uses the proxy you
+     * have NOW. */
+    func testRunnerStampsTheCurrentConnection() throws {
+        let runner = Runner()
+        var conn = RunOptions()
+        conn.proxy = "http://u:pw@new:1"
+        conn.cookiesFromBrowser = "firefox"
+        runner.setConnection(conn)
+
+        var o = RunOptions()
+        o.url = "https://youtu.be/abcdefghijk"
+        o.mode = "comments-only"
+        o.refresh = true
+        o.proxy = "http://old:1"
+        _ = try runner.enqueue(o)
+
+        /* The queue is persisted on a background serial queue, so wait for
+         * the write rather than racing it. */
+        let qpath = Paths.join(Paths.stateDir(), "queue.json")
+        var queued = ""
+        for _ in 0..<50 {
+            queued = (try? String(contentsOfFile: qpath, encoding: .utf8)) ?? ""
+            if queued.contains("abcdefghijk") { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(queued.contains("new:1"))
+        XCTAssertFalse(queued.contains("old:1"))
+        /* The stored command is the masked preview. */
+        XCTAssertTrue(queued.contains("***@new:1"))
+        let attrs = try FileManager.default.attributesOfItem(
+            atPath: Paths.join(Paths.stateDir(), "queue.json"))
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
     func testAtomicWriteReplacesAndLeavesNoTempBehind() throws {
         let path = Paths.join(home, "state/thing.json")
         XCTAssertTrue(AtomicFile.write(Data("{\"a\":1}".utf8), to: path))

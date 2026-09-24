@@ -217,6 +217,11 @@ final class AppModel: ObservableObject {
         ProfileStore.seedDefaultIfMissing()
         profiles = ProfileStore.load()
         downloads = DownloadsModel(settings: loaded, store: profiles)
+        /* Before anything can enqueue, so the very first run -- a re-fetch
+         * started from a video's page before Downloads is ever opened included
+         * -- goes out with the saved cookies and proxy. The Downloads pane
+         * updates it whenever the Connection settings change. */
+        runner.setConnection(loaded.connection())
         archiveRoot = AppModel.resolveRoot(settings: loaded)
 
         /* The saved ordering, before the first scan, so the first grid ever

@@ -122,7 +122,7 @@ default is the one recovery nobody can undo.
 | Pane | What it does |
 |---|---|
 | Library | media cards, thumbnails, live search, virtualised grid, threaded scan |
-| Downloads | the option form, the URL preview, the command preview, queue, live progress, history, pause, cancel |
+| Downloads | the option form (frame-rate ceiling, subtitle languages, chapters, SponsorBlock included), the Connection settings — cookies, proxy, speed limit, aria2c — stamped onto every run the app starts, the URL preview, the command preview (a proxy password masked), queue with a note that it is sequential on purpose, live progress, history, pause, cancel. Needs `0003-orchid-ochre` or later |
 | Health | dependency probe, installed files, config, archive stats, log tails |
 | Video detail | player, streams, metadata, comments, transcript, files, checksum verify |
 | Profiles | named option sets, saved and restored; a fresh install starts with **Default** |

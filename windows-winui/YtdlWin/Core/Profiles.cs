@@ -182,6 +182,11 @@ public sealed class ProfileStore
 
         var copy = opts.Clone();
         copy.Url = "";
+        /* Nor the connection. It is a setting, stamped onto every run by the
+         * Runner; a profile carrying a copy would bring back a proxy or a
+         * cookie source that has since changed, and would put a proxy
+         * password into profiles.json for no reason. */
+        copy.SetConnection(null);
 
         var i = Position(clean);
         if (i >= 0)

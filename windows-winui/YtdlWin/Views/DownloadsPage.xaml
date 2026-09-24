@@ -198,6 +198,15 @@
                                    Description="MKV keeps everything the pipeline embeds. MP4 with the AVC1 codec is the combination Windows can always play in this window without a Store media extension.">
                     <ComboBox x:Name="ContainerBox" MinWidth="180" SelectionChanged="OnOptionChanged" />
                 </local:OptionRow>
+                <!--
+                    A CEILING, the same shape as Quality: ytdl's frame-rate option is a
+                    predicate with a fallback. Three values, because at most 60
+                    already admits 50 and at most 30 already admits 25 and 24.
+                -->
+                <local:OptionRow Header="Frame rate"
+                                 Description="A ceiling, like Quality. On a 60 fps upload, ≤ 30 can mean 480p.">
+                    <ComboBox x:Name="FpsBox" MinWidth="180" SelectionChanged="OnOptionChanged" />
+                </local:OptionRow>
                 <local:OptionRow Header="Workers"
                                    Description="The pipeline's own parallelism. The queue here is always sequential, because independent ytdl invocations race on the shared manifests — --workers is the supported way to run several at once.">
                     <muxc:NumberBox x:Name="WorkersBox" Minimum="1" Maximum="16"
@@ -210,6 +219,73 @@
                 <TextBlock Style="{StaticResource CaptionSecondary}" Margin="0,0,0,8"
                            Text="Everything is on by default. Turning a pass off makes a run faster and the archive less complete." />
                 <StackPanel x:Name="PassesPanel" Spacing="4" />
+
+                <!--
+                    Subtitles, chapters and SponsorBlock. Greyed out rather than
+                    hidden when they cannot apply, so the value is still visible
+                    and comes back with the mode. See UpdateSensitivity.
+                -->
+                <TextBlock Text="Subtitles, chapters and SponsorBlock"
+                           Style="{StaticResource SectionHeader}" Margin="0,12,0,8" />
+                <local:OptionRow Header="Subtitle languages"
+                                 Description="Empty means English (en.*). yt-dlp's own syntax — regexes, exclusions and all: en.*,de,-live_chat">
+                    <TextBox x:Name="SubLangsBox" MinWidth="260" PlaceholderText="en.*"
+                             TextChanged="OnExtrasTextChanged" />
+                </local:OptionRow>
+                <local:OptionRow Header="Embed chapters"
+                                 Description="Chapter markers inside the media file. They are kept in the info.json either way.">
+                    <ToggleSwitch x:Name="ChaptersSwitch" OnContent="On" OffContent="Off"
+                                  Toggled="OnChaptersToggled" />
+                </local:OptionRow>
+                <local:OptionRow Header="SponsorBlock"
+                                 Description="Cutting changes the archived file: it is no longer the one YouTube served. The uncut streams stay in Pre-merge streams, and the manifest records the cut.">
+                    <ComboBox x:Name="SponsorModeBox" MinWidth="180" SelectionChanged="OnSponsorModeChanged" />
+                </local:OptionRow>
+                <local:OptionRow Header="SponsorBlock categories"
+                                 Description="Comma-separated: sponsor, selfpromo, intro, outro, interaction, preview, filler, music_offtopic, hook — or all.">
+                    <TextBox x:Name="SponsorCatsBox" MinWidth="260" PlaceholderText="sponsor"
+                             TextChanged="OnExtrasTextChanged" />
+                </local:OptionRow>
+
+                <!--
+                    Connection. Settings, not per run and not in a profile:
+                    saved as they change and handed straight to the Runner,
+                    which stamps them onto every run this app starts.
+                -->
+                <TextBlock Text="Connection" Style="{StaticResource SectionHeader}" Margin="0,12,0,4" />
+                <TextBlock Style="{StaticResource CaptionSecondary}" Margin="0,0,0,8" TextWrapping="Wrap"
+                           Text="Saved as you change it, and used by every run this app starts — downloads, previews and re-fetches alike. Not part of a profile." />
+                <local:OptionRow Header="Cookies"
+                                 Description="For members-only, age-restricted and private videos, and YouTube Premium's higher bitrate.">
+                    <ComboBox x:Name="CookiesSourceBox" MinWidth="180" SelectionChanged="OnConnectionSelectionChanged" />
+                </local:OptionRow>
+                <local:OptionRow x:Name="CookiesBrowserRow" Header="Browser"
+                                 Description="Chrome and Edge lock their cookie database while running — close the browser first, or use a cookies.txt.">
+                    <ComboBox x:Name="CookiesBrowserBox" MinWidth="180" SelectionChanged="OnConnectionSelectionChanged" />
+                </local:OptionRow>
+                <local:OptionRow x:Name="CookiesProfileRow" Header="Browser profile"
+                                 Description="Empty means the default one.">
+                    <TextBox x:Name="CookiesProfileBox" MinWidth="260" TextChanged="OnConnectionTextChanged" />
+                </local:OptionRow>
+                <local:OptionRow x:Name="CookiesFileRow" Header="cookies.txt"
+                                 Description="Read, never written: each run gets a private copy, because yt-dlp saves its cookie jar back to the file it was given.">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBox x:Name="CookiesFileBox" MinWidth="260" TextChanged="OnConnectionTextChanged" />
+                        <Button Content="Choose…" Click="OnChooseCookieFile" />
+                    </StackPanel>
+                </local:OptionRow>
+                <local:OptionRow Header="Proxy"
+                                 Description="e.g. socks5h://127.0.0.1:1080. A password in it is masked in the command below and in every log.">
+                    <TextBox x:Name="ProxyBox" MinWidth="260" TextChanged="OnConnectionTextChanged" />
+                </local:OptionRow>
+                <local:OptionRow Header="Speed limit"
+                                 Description="Bytes per second, e.g. 2M. Per worker. Empty means none.">
+                    <TextBox x:Name="LimitRateBox" MinWidth="120" TextChanged="OnConnectionTextChanged" />
+                </local:OptionRow>
+                <local:OptionRow Header="Downloader"
+                                 Description="aria2c must be installed, and reports no progress here.">
+                    <ComboBox x:Name="DownloaderBox" MinWidth="180" SelectionChanged="OnConnectionSelectionChanged" />
+                </local:OptionRow>
 
                 <!-- Advanced -->
                 <TextBlock Text="Advanced" Style="{StaticResource SectionHeader}" Margin="0,12,0,8" />
@@ -313,6 +389,9 @@
                 <StackPanel Grid.Column="0" Spacing="4">
                     <TextBlock x:Name="QueueHeader" Text="Queue (0)"
                                Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <!-- Shown only while something is waiting. See ApplyState. -->
+                    <TextBlock x:Name="QueueNote" Style="{StaticResource CaptionSecondary}"
+                               TextWrapping="Wrap" Visibility="Collapsed" />
                     <TextBlock x:Name="QueueEmpty" Style="{StaticResource CaptionSecondary}"
                                Text="Nothing queued. Paste a URL above and press Add to queue." />
                     <ListView x:Name="QueueList" Height="110" SelectionMode="None" />

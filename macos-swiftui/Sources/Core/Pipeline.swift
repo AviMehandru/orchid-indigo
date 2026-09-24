@@ -72,6 +72,30 @@ struct RunOptions: Equatable {
     var noThumbnail = false
     var noMetadata = false
 
+    /* The rest of the media description -- the options competitors expose as
+     * controls that this app used to reach only through the Advanced box.
+     * Each maps to one ytdl.ps1 flag and each is validated THERE. */
+    /// --fps; 0 = no ceiling.
+    var fps: Int = 0
+    /// --sub-langs; empty = the conf's en.*
+    var subLangs: String = ""
+    var noChapters = false
+    var sponsorblockMark: String = ""
+    var sponsorblockRemove: String = ""
+
+    /* How YouTube is reached. Not content, and not chosen per run: these come
+     * from Settings and are stamped onto every run by the Runner (see
+     * Runner.setConnection), so a download, a re-fetch from a video's page, a
+     * bulk re-fetch and a Run again all go out the same way. The form never
+     * writes them and a profile never stores them. */
+    var cookiesFromBrowser: String = ""
+    var cookiesFile: String = ""
+    /// May carry user:password@ -- see redactProxy.
+    var proxy: String = ""
+    var limitRate: String = ""
+    /// empty = native
+    var downloader: String = ""
+
     /// Each emitted as its own --ytdlp-arg.
     var ytdlpArgs: [String] = []
 }
@@ -145,11 +169,25 @@ extension RunOptions {
         RunOptions.pushNonDefault(&v, "--codec", codec, "any")
         RunOptions.pushNonDefault(&v, "--audio-codec", audioCodec, "any")
         RunOptions.pushNonDefault(&v, "--container", container, "mkv")
+        if fps > 0 {
+            v.append("--fps")
+            v.append(String(fps))
+        }
+        RunOptions.pushNonDefault(&v, "--sub-langs", subLangs, "")
+        if noChapters { v.append("--no-chapters") }
+        RunOptions.pushNonDefault(&v, "--sponsorblock-mark", sponsorblockMark, "")
+        RunOptions.pushNonDefault(&v, "--sponsorblock-remove", sponsorblockRemove, "")
 
         if noComments { v.append("--no-comments") }
         if noSubs { v.append("--no-subs") }
         if noThumbnail { v.append("--no-thumbnail") }
         if noMetadata { v.append("--no-metadata") }
+
+        /* After the content options and before the passthrough, which keeps
+         * its place at the end: a --ytdlp-arg --proxy typed into the Advanced
+         * box before this existed still reaches yt-dlp after ours and still
+         * wins. */
+        v += connectionArgs(forProbe: false)
 
         /* Repeated rather than joined: ytdl.ps1 takes one value per occurrence,
          * and a real --match-filter expression contains commas and spaces, so
@@ -169,9 +207,16 @@ extension RunOptions {
      *
      * What is shown must be pasteable into a terminal as-is: the URL is always
      * quoted, anything containing a space is quoted, nothing else is. */
+    /*
+     * The one place it deliberately differs from the real argv: a proxy's
+     * user:password@ is shown as ***@. The preview is on screen, it is stored
+     * as each run's `command` in history.json, and it is the thing somebody
+     * copies into a bug report. */
     func commandPreview() -> String {
         var s = "ytdl"
-        for (i, arg) in toArgs().enumerated() {
+        let args = toArgs()
+        for (i, raw) in args.enumerated() {
+            let arg = (i > 0 && args[i - 1] == "--proxy") ? RunOptions.redactProxy(raw) : raw
             s += " "
             if i == 0 || arg.contains(" ") {
                 s += "\"\(arg)\""
@@ -180,6 +225,72 @@ extension RunOptions {
             }
         }
         return s
+    }
+
+    /* The connection options only, as ytdl flags: cookies and proxy, plus the
+     * speed limit and downloader unless forProbe. `ytdl --probe` refuses those
+     * two -- a probe moves no media bytes for them to govern -- and takes the
+     * other three because they change what yt-dlp can SEE.
+     *
+     * The cookie FILE is passed as the real path: making a private copy per
+     * yt-dlp process is the pipeline's job (yt-dlp writes its jar back to the
+     * path on exit), and it can only do that if it is handed the original. */
+    func connectionArgs(forProbe: Bool) -> [String] {
+        var v: [String] = []
+        RunOptions.pushNonDefault(&v, "--cookies-from-browser", cookiesFromBrowser, "")
+        RunOptions.pushNonDefault(&v, "--cookies", cookiesFile, "")
+        RunOptions.pushNonDefault(&v, "--proxy", proxy, "")
+        if !forProbe {
+            RunOptions.pushNonDefault(&v, "--limit-rate", limitRate, "")
+            RunOptions.pushNonDefault(&v, "--downloader", downloader, "native")
+        }
+        return v
+    }
+
+    /// Copy the five connection fields of `conn` over this one's; nil clears
+    /// them.
+    mutating func setConnection(from conn: RunOptions?) {
+        cookiesFromBrowser = conn?.cookiesFromBrowser ?? ""
+        cookiesFile = conn?.cookiesFile ?? ""
+        proxy = conn?.proxy ?? ""
+        limitRate = conn?.limitRate ?? ""
+        downloader = conn?.downloader ?? ""
+    }
+
+    /* socks5://me:secret@host:1080 becomes socks5:// + "***@host:1080". The
+     * userinfo ends at the LAST '@' before the first '/', so a password that
+     * itself contains an unescaped '@' is hidden whole rather than half-shown.
+     * Pinned by the same six-case fixture as the GTK and WinUI suites. */
+    static func redactProxy(_ proxy: String) -> String {
+        guard let schemeEnd = proxy.range(of: "://") else { return proxy }
+        let authorityStart = schemeEnd.upperBound
+        let rest = proxy[authorityStart...]
+        let end = rest.firstIndex(of: "/") ?? proxy.endIndex
+        guard let at = proxy[authorityStart..<end].lastIndex(of: "@") else { return proxy }
+        return String(proxy[..<authorityStart]) + "***" + String(proxy[at...])
+    }
+
+    /* Clear the options that cannot apply given the rest, exactly as the form
+     * greys their controls out:
+     *
+     *   a no-media mode   -> fps, noChapters and both SponsorBlock lists
+     *   noSubs            -> subLangs
+     *   sponsorblockMark  -> noChapters
+     *
+     * NOT validation, and not a copy of ytdl.ps1's: it refuses nothing, it
+     * only keeps the argv from carrying a value the form shows as not
+     * applying. Each rule mirrors one of ytdl.ps1's refusals, so without it a
+     * greyed-out control would fail the run with an error about an option the
+     * user cannot see. Same rules, same fixture, as the other two apps. */
+    mutating func dropInapplicable() {
+        if ["metadata-only", "comments-only", "subs-only"].contains(mode) {
+            fps = 0
+            noChapters = false
+            sponsorblockMark = ""
+            sponsorblockRemove = ""
+        }
+        if noSubs { subLangs = "" }
+        if RunOptions.isNonEmpty(sponsorblockMark) { noChapters = false }
     }
 
     /* A bare video id becomes a watch URL; anything already URL-shaped is left
@@ -221,12 +332,22 @@ extension RunOptions {
             "no_subs": noSubs,
             "no_thumbnail": noThumbnail,
             "no_metadata": noMetadata,
+            "fps": fps,
+            "no_chapters": noChapters,
             "ytdlp_args": ytdlpArgs,
         ]
+        /* The connection fields are written too, so a queue restored after a
+         * restart runs the way it was queued. That puts a proxy password, if
+         * the proxy has one, into queue.json and history.json -- which is why
+         * those, like settings.json, are written owner-only. */
         for (k, v) in [
             ("url", url), ("data_root", dataRoot), ("items", items), ("after", after),
             ("mode", mode), ("quality", quality), ("codec", codec),
             ("audio_codec", audioCodec), ("container", container),
+            ("sub_langs", subLangs), ("sponsorblock_mark", sponsorblockMark),
+            ("sponsorblock_remove", sponsorblockRemove),
+            ("cookies_from_browser", cookiesFromBrowser), ("cookies_file", cookiesFile),
+            ("proxy", proxy), ("limit_rate", limitRate), ("downloader", downloader),
         ] where !v.isEmpty {
             o[k] = v
         }
@@ -261,6 +382,16 @@ extension RunOptions {
         o.noSubs = obj.bool("no_subs")
         o.noThumbnail = obj.bool("no_thumbnail")
         o.noMetadata = obj.bool("no_metadata")
+        o.fps = Int(obj.int("fps"))
+        o.subLangs = obj.str("sub_langs") ?? ""
+        o.noChapters = obj.bool("no_chapters")
+        o.sponsorblockMark = obj.str("sponsorblock_mark") ?? ""
+        o.sponsorblockRemove = obj.str("sponsorblock_remove") ?? ""
+        o.cookiesFromBrowser = obj.str("cookies_from_browser") ?? ""
+        o.cookiesFile = obj.str("cookies_file") ?? ""
+        o.proxy = obj.str("proxy") ?? ""
+        o.limitRate = obj.str("limit_rate") ?? ""
+        o.downloader = obj.str("downloader") ?? ""
         o.ytdlpArgs = obj.strings("ytdlp_args")
         return o
     }

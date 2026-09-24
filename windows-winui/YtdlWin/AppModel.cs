@@ -35,6 +35,12 @@ public sealed class DownloadsFormState
     /// to split a single-line field on.
     public string ExtraArgsText { get; set; } = "";
     public string? SelectedProfile { get; set; }
+    /* SponsorBlock is one choice -- off, mark, or cut -- plus one category
+     * list, and the two RunOptions fields it becomes are derived in
+     * EffectiveOptions(). Kept apart so switching the mode off and on again does
+     * not make anybody retype a list. */
+    public string SponsorMode { get; set; } = "off";
+    public string SponsorCats { get; set; } = "sponsor";
     public string Status { get; set; } = "";
     public bool StatusIsError { get; set; }
 
@@ -76,6 +82,15 @@ public sealed class DownloadsFormState
         Opts.NoSubs = p.NoSubs;
         Opts.NoThumbnail = p.NoThumbnail;
         Opts.NoMetadata = p.NoMetadata;
+        Opts.Fps = p.Fps;
+        Opts.SubLangs = p.SubLangs;
+        Opts.NoChapters = p.NoChapters;
+        /* A profile written before these existed has neither list, which reads
+         * as SponsorBlock off -- the behaviour it always had. The category
+         * field keeps whatever it held. */
+        if (p.SponsorblockRemove.Length > 0) { SponsorMode = "remove"; SponsorCats = p.SponsorblockRemove; }
+        else if (p.SponsorblockMark.Length > 0) { SponsorMode = "mark"; SponsorCats = p.SponsorblockMark; }
+        else SponsorMode = "off";
 
         /* The destination is part of the profile, but an empty one must not
          * wipe a destination the user has set for this session. */
@@ -84,6 +99,30 @@ public sealed class DownloadsFormState
         ExtraArgsText = string.Join(Environment.NewLine, p.YtdlpArgs);
         Opts.YtdlpArgs = new List<string>(p.YtdlpArgs);
     }
+
+    /* What the form MEANS, as opposed to what its controls hold: the
+     * SponsorBlock choice folded into its two fields, and whatever the form is
+     * showing greyed out dropped (RunOptions.DropInapplicable). This is what
+     * is queued, previewed and saved as a profile. The connection is not here
+     * -- the Runner stamps it on at enqueue. */
+    public RunOptions EffectiveOptions()
+    {
+        var o = Opts.Clone();
+        var cats = SponsorCats.Trim();
+        /* An empty list with a mode chosen is sent as "sponsor" rather than
+         * dropped: the picker says SponsorBlock is on, and a run that quietly
+         * did nothing about it would contradict the form. */
+        if (cats.Length == 0) cats = "sponsor";
+        o.SponsorblockMark = SponsorMode == "mark" ? cats : "";
+        o.SponsorblockRemove = SponsorMode == "remove" ? cats : "";
+        o.DropInapplicable();
+        return o;
+    }
+
+    /// Mirrors RunOptions.DropInapplicable rule for rule: the one decides
+    /// what is greyed out, the other what is sent.
+    public bool MediaOptionsApply =>
+        Opts.Mode is not ("metadata-only" or "comments-only" or "subs-only");
 }
 
 public sealed class AppModel
@@ -120,6 +159,11 @@ public sealed class AppModel
         ProfileStore.SeedDefaultIfMissing();
         Profiles = ProfileStore.Load();
         Form = new DownloadsFormState(Settings, Profiles);
+        /* Before anything can enqueue, so the very first run -- a re-fetch
+         * started from a video's page before Downloads is ever opened
+         * included -- goes out with the saved cookies and proxy. The Downloads
+         * page updates it whenever the Connection settings change. */
+        Runner.SetConnection(Settings.Connection());
         ArchiveRoot = ResolveRoot();
 
         /* The saved ordering, before the first scan, so the first grid ever

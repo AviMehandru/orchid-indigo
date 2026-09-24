@@ -186,6 +186,11 @@ final class ProfileStore: ObservableObject {
 
         var copy = opts
         copy.url = ""
+        /* Nor the connection. It is a setting, stamped onto every run by the
+         * Runner; a profile carrying a copy would bring back a proxy or a
+         * cookie source that has since changed, and would put a proxy
+         * password into profiles.json for no reason. */
+        copy.setConnection(from: nil)
 
         if let i = position(of: clean) {
             profiles[i].opts = copy
