@@ -1036,6 +1036,102 @@ public sealed partial class DownloadsPage : Page
         }
     }
 
+    /* Subscribe asks only what a download does not: how often, a name, and
+     * --sync, which is on by default here whatever the form says, because
+     * without it every check walks the whole channel. Everything else is the
+     * form exactly as Add to queue would send it, Connection settings
+     * included: a scheduled check of a members-only playlist needs the same
+     * cookies the first download did, and nothing else is going to stamp them
+     * on at 3am. The subscription keeps the settings as they are now; saving
+     * it again from here updates them. */
+    private async void OnSubscribe(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(Form.Opts.Url))
+        {
+            await ShowError("Enter the channel or playlist URL to subscribe to first. Its options "
+                            + "come from this form.");
+            return;
+        }
+
+        var every = new ComboBox { Header = "Check", MinWidth = 200 };
+        foreach (var h in SubscriptionText.IntervalChoices)
+        {
+            every.Items.Add(new ComboBoxItem { Content = SubscriptionText.Every(h), Tag = h });
+        }
+        every.SelectedIndex = Array.IndexOf(SubscriptionText.IntervalChoices, 24);
+        var name = new TextBox
+        {
+            Header = "Name",
+            PlaceholderText = "Optional — shown instead of the URL",
+        };
+        var sync = new CheckBox
+        {
+            Content = "Stop at the first video already archived (--sync). Right for a channel's "
+                      + "Videos page, which is newest first; without it every check walks the "
+                      + "whole listing.",
+            IsChecked = true,
+        };
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "The pipeline will download what is new at this URL, with the options on this "
+                   + "form, whenever it is due — whether or not this app is open. Turn on hourly "
+                   + "checks on the Subscriptions page.",
+            TextWrapping = TextWrapping.Wrap,
+        });
+        panel.Children.Add(every);
+        panel.Children.Add(name);
+        panel.Children.Add(sync);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Subscribe",
+            Content = panel,
+            PrimaryButtonText = "Subscribe",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        ContentDialogResult result;
+        try { result = await dialog.ShowAsync(); }
+        catch (Exception) { return; /* another dialog is already up */ }
+        if (result != ContentDialogResult.Primary) return;
+
+        var opts = Form.EffectiveOptions();
+        opts.SetConnection(Model.Settings.Connection());
+        opts.Sync = sync.IsChecked == true;
+        var hours = (every.SelectedItem as ComboBoxItem)?.Tag is int h2 ? h2 : 24;
+        var args = SubscriptionArgs.Subscribe(opts, hours, name.Text);
+
+        SubscribeButton.IsEnabled = false;
+        try
+        {
+            var r = await System.Threading.Tasks.Task.Run(() => YtdlCommand.RunAsync(args));
+            if (r.ExitCode != 0)
+            {
+                await ShowError(r.MeansTooOld
+                    ? "The installed pipeline predates subscriptions. Re-run orchid-ochre's setup "
+                      + "to update it."
+                    : r.Message);
+                return;
+            }
+            /* "Subscribed 3f2a9c1e: Name (every 1d)", or "Updated subscription
+             * ..." when the URL was already subscribed and its options have
+             * just been replaced. Which of the two happened is the pipeline's
+             * to say, not this form's to guess. */
+            var first = r.StdOut.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0);
+            Model.Say(first ?? "Subscribed.");
+        }
+        catch (Exception ex)
+        {
+            await ShowError(ex.Message);
+        }
+        finally
+        {
+            SubscribeButton.IsEnabled = true;
+        }
+    }
+
     private async void OnCancel(object sender, RoutedEventArgs e)
     {
         if (!Model.Runner.Cancel()) await ShowError("Nothing is running.");

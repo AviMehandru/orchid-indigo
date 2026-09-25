@@ -319,13 +319,23 @@
                     </StackPanel>
                 </Border>
 
-                <Button x:Name="AddButton" Click="OnAddToQueue" Margin="0,12,0,0"
-                        Style="{StaticResource AccentButtonStyle}">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <FontIcon Glyph="&#xE710;" FontSize="14" />
-                        <TextBlock Text="Add to queue" />
-                    </StackPanel>
-                </Button>
+                <!--
+                    Subscribe sits beside Add to queue because this form already
+                    holds every option a download can take and shows the command
+                    line. It stores the form as a pipeline subscription, checked
+                    on a schedule, instead of running it now.
+                -->
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+                    <Button x:Name="AddButton" Click="OnAddToQueue"
+                            Style="{StaticResource AccentButtonStyle}">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE710;" FontSize="14" />
+                            <TextBlock Text="Add to queue" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="SubscribeButton" Click="OnSubscribe" Content="Subscribe…"
+                            ToolTipService.ToolTip="Keep this URL archived: store it with these options as a pipeline subscription, checked on a schedule instead of downloaded now" />
+                </StackPanel>
             </StackPanel>
         </ScrollViewer>
 

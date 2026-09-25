@@ -455,7 +455,12 @@ public sealed class Runner
         var dataRoot = string.IsNullOrWhiteSpace(record.Opts.DataRoot)
             ? Paths.InstallRoot()
             : Paths.ExpandTilde(record.Opts.DataRoot.Trim());
-        record.LogPath = Paths.Join(Paths.Join(dataRoot, @"Archive Logs\Logs"), "download.log");
+        /* A subscription check writes its own session log -- the pipeline
+         * keeps scheduled and manual sessions apart so neither corrupts the
+         * other's per-video video_complete.log. */
+        var logName = string.IsNullOrEmpty(record.Opts.SubscriptionId)
+            ? "download.log" : "download.subscriptions.log";
+        record.LogPath = Paths.Join(Paths.Join(dataRoot, @"Archive Logs\Logs"), logName);
 
         lock (_lock)
         {

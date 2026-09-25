@@ -377,7 +377,11 @@ final class Runner: ObservableObject {
         let dataRoot = rec.opts.dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? Paths.installRoot()
             : Paths.expandTilde(rec.opts.dataRoot.trimmingCharacters(in: .whitespacesAndNewlines))
-        rec.logPath = Paths.join(Paths.join(dataRoot, "Archive Logs/Logs"), "download.log")
+        /* A subscription check writes its own session log -- the pipeline
+         * keeps scheduled and manual sessions apart so neither corrupts the
+         * other's per-video video_complete.log. */
+        let logName = rec.opts.subscriptionID.isEmpty ? "download.log" : "download.subscriptions.log"
+        rec.logPath = Paths.join(Paths.join(dataRoot, "Archive Logs/Logs"), logName)
 
         lock.lock()
         pendingProgress = RunProgress()

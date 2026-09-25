@@ -157,6 +157,7 @@ public sealed partial class MainWindow : Window
         var page = (item.Tag as string) switch
         {
             "downloads" => typeof(DownloadsPage),
+            "subscriptions" => typeof(SubscriptionsPage),
             "health" => typeof(HealthPage),
             _ => typeof(LibraryPage),
         };

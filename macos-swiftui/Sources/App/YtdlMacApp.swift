@@ -15,7 +15,7 @@
  * pipeline's own, plus ffprobe for stream details.
  *
  * THE SHELL IS APPKIT'S, NOT HAND-BUILT. NavigationSplitView owns the sidebar
- * and the three pages; NavigationStack owns library-to-detail, which is where
+ * and the four pages; NavigationStack owns library-to-detail, which is where
  * the back button, the swipe and the ⌘[ shortcut come from; .searchable owns the
  * search field. There is deliberately no adaptive-width story: the GTK app has
  * one because GNOME targets phone-shaped windows, and macOS does not.
@@ -38,6 +38,7 @@ struct YtdlMacApp: App {
                 .environmentObject(model.runner)
                 .environmentObject(model.profiles)
                 .environmentObject(model.downloads)
+                .environmentObject(model.subscriptions)
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear {
                     /* The worker starts only once the window it will publish
@@ -109,10 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
-/// The three top-level pages, which the sidebar lists and the window switches
+/// The four top-level pages, which the sidebar lists and the window switches
 /// between.
 enum AppSection: String, CaseIterable, Identifiable {
-    case library, downloads, health
+    case library, downloads, subscriptions, health
 
     var id: String { rawValue }
 
@@ -120,6 +121,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "Library"
         case .downloads: return "Downloads"
+        case .subscriptions: return "Subscriptions"
         case .health: return "Health"
         }
     }
@@ -128,6 +130,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "square.grid.2x2"
         case .downloads: return "arrow.down.circle"
+        case .subscriptions: return "dot.radiowaves.left.and.right"
         case .health: return "stethoscope"
         }
     }
@@ -225,6 +228,19 @@ final class AppModel: ObservableObject {
      * @State goes with it. */
     let profiles: ProfileStore
     let downloads: DownloadsModel
+    /* The pipeline's subscriptions, read through `ytdl`. Owned here for the
+     * same reason `downloads` is. This app runs no timer -- see
+     * Core/Subscriptions.swift.
+     *
+     * lazy, because it is built from `runner` and Swift will not let an
+     * initialiser read a stored property until every one is set -- the reason
+     * `notifier` is an optional. Its outcomes go to the status line, which is
+     * this app's toast. */
+    lazy var subscriptions: SubscriptionsModel = {
+        let m = SubscriptionsModel(runner: runner)
+        m.onMessage = { [weak self] text in self?.status = text }
+        return m
+    }()
     /* Optional only because it is built from `runner`, and Swift will not
      * let an initialiser read a stored property until every one is set. It
      * is set at the end of init and never cleared. */

@@ -98,6 +98,17 @@ struct RunOptions: Equatable {
 
     /// Each emitted as its own --ytdlp-arg.
     var ytdlpArgs: [String] = []
+
+    /* Set, this is not a download of `url` at all: it is "check this pipeline
+     * subscription now", and the whole argv is `--run-subscriptions ID`. The
+     * subscription carries its own stored options -- content and connection
+     * both -- so every other field is ignored when building the command,
+     * including the connection the Runner stamps on at enqueue. `url` and
+     * `dataRoot` are kept for what the queue and history rows show and for
+     * where the session log is. Going through the queue rather than a side
+     * channel is the point: a check is then as sequential, as visible and as
+     * cancellable as any other run. See Subscriptions.swift. */
+    var subscriptionID: String = ""
 }
 
 extension RunOptions {
@@ -126,6 +137,14 @@ extension RunOptions {
      * id would be bound as a parameter before the script ever saw it, and about
      * one YouTube id in thirty starts with "-" or "_". */
     func toArgs() -> [String] {
+        /* A subscription check: the pipeline has the options, stored when the
+         * subscription was made and validated again by ytdl.ps1 when it runs.
+         * Anything this form or the Connection settings added here would be a
+         * second, disagreeing copy of them. */
+        if RunOptions.isNonEmpty(subscriptionID) {
+            return ["--run-subscriptions", subscriptionID.trimmingCharacters(in: .whitespacesAndNewlines)]
+        }
+
         var v: [String] = []
         v.append(RunOptions.normalizeURL(url))
 
@@ -218,7 +237,11 @@ extension RunOptions {
         for (i, raw) in args.enumerated() {
             let arg = (i > 0 && args[i - 1] == "--proxy") ? RunOptions.redactProxy(raw) : raw
             s += " "
-            if i == 0 || arg.contains(" ") {
+            /* The first argument is the URL and is always quoted -- it is the
+             * one a shell would mangle -- except in a subscription check,
+             * whose first argument is the command itself. */
+            let isURL = i == 0 && !RunOptions.isNonEmpty(subscriptionID)
+            if isURL || arg.contains(" ") {
                 s += "\"\(arg)\""
             } else {
                 s += arg
@@ -348,6 +371,7 @@ extension RunOptions {
             ("sponsorblock_remove", sponsorblockRemove),
             ("cookies_from_browser", cookiesFromBrowser), ("cookies_file", cookiesFile),
             ("proxy", proxy), ("limit_rate", limitRate), ("downloader", downloader),
+            ("subscription_id", subscriptionID),
         ] where !v.isEmpty {
             o[k] = v
         }
@@ -392,6 +416,7 @@ extension RunOptions {
         o.proxy = obj.str("proxy") ?? ""
         o.limitRate = obj.str("limit_rate") ?? ""
         o.downloader = obj.str("downloader") ?? ""
+        o.subscriptionID = obj.str("subscription_id") ?? ""
         o.ytdlpArgs = obj.strings("ytdlp_args")
         return o
     }

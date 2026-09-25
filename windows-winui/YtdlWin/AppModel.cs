@@ -795,4 +795,15 @@ public sealed class AppModel
     }
 
     public ArchiveEntry? Entry(string key) => Index.Entry(key);
+
+    /// <summary>
+    /// Put a one-line outcome in the status line -- this app's toast, since
+    /// WinUI has none. Used by the Subscriptions page, whose commands finish
+    /// after the button that started them has been forgotten about.
+    /// </summary>
+    public void Say(string message)
+    {
+        Status = message;
+        Changed?.Invoke();
+    }
 }

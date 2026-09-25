@@ -1,8 +1,8 @@
-/* The window: a sidebar, the three pages, and a status line under them.
+/* The window: a sidebar, the four pages, and a status line under them.
  *
  * The sidebar is the macOS equivalent of the GTK app's AdwViewSwitcher, and
  * NOT a TabView. Both are in AppKit's vocabulary; the sidebar wins because
- * these three pages are places rather than modes of one thing, and because the
+ * these four pages are places rather than modes of one thing, and because the
  * source-list treatment is what a Mac user reads as "sections of this app".
  *
  * THE STATUS LINE REPLACES THE TOAST OVERLAY, and that is a real decision
@@ -59,6 +59,8 @@ struct ContentView: View {
             LibraryView()
         case .downloads:
             DownloadsView()
+        case .subscriptions:
+            SubscriptionsView()
         case .health:
             HealthView()
         }

@@ -345,9 +345,11 @@ struct DownloadsView: View {
     @EnvironmentObject private var settings: Settings
     @EnvironmentObject private var form: DownloadsModel
     @EnvironmentObject private var store: ProfileStore
+    @EnvironmentObject private var subs: SubscriptionsModel
 
     @State private var nameSheet: NameSheet?
     @State private var errorMessage: String?
+    @State private var subscribeSheet = false
 
     private struct NameSheet: Identifiable {
         let renaming: Bool
@@ -512,12 +514,55 @@ struct DownloadsView: View {
                 Button("Choose…") { chooseFolder() }
             }
 
-            Button {
-                addToQueue()
-            } label: {
-                Label("Add to queue", systemImage: "plus.circle.fill")
+            HStack {
+                Button {
+                    addToQueue()
+                } label: {
+                    Label("Add to queue", systemImage: "plus.circle.fill")
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+
+                /* Subscribe is HERE rather than on the Subscriptions page
+                 * because this is where every option a download can take
+                 * already has a control, and where the command line is shown.
+                 * A second form there would be a second place for the two to
+                 * disagree. The sheet asks only what a download does not. The
+                 * sheet is attached to the button rather than to the view,
+                 * which already carries the profile-name sheet: two .sheet
+                 * modifiers on one view is the combination SwiftUI resolves
+                 * by ignoring one of them. */
+                Button("Subscribe…") {
+                    if form.opts.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        errorMessage = "Enter the channel or playlist URL to subscribe to first. "
+                            + "Its options come from this form."
+                    } else {
+                        subscribeSheet = true
+                    }
+                }
+                .help("Keep this URL archived: store it with these options as a pipeline "
+                      + "subscription, checked on a schedule instead of downloaded now")
+                .sheet(isPresented: $subscribeSheet) {
+                    SubscribeSheet(url: form.opts.url) { everyHours, name, sync in
+                        subscribe(everyHours: everyHours, name: name, sync: sync)
+                    }
+                }
             }
-            .keyboardShortcut(.return, modifiers: .command)
+        }
+    }
+
+    /* The form exactly as Add to queue would send it, Connection settings
+     * included: a scheduled check of a members-only playlist needs the same
+     * cookies the first download did, and nothing else is going to stamp them
+     * on at 3am. The subscription keeps the settings as they are now; saving it
+     * again from here updates them. --sync is the sheet's, not the form's: on
+     * by default there, because without it every check walks the whole
+     * channel. */
+    private func subscribe(everyHours: Int, name: String, sync: Bool) {
+        var opts = form.runOptions
+        opts.setConnection(from: settings.connection())
+        opts.sync = sync
+        subs.subscribe(opts, everyHours: everyHours, name: name) { error in
+            if let error { errorMessage = error }
         }
     }
 
@@ -1449,5 +1494,60 @@ private struct ProfileNameSheet: View {
         guard !trimmed.isEmpty else { return }
         onCommit(trimmed)
         dismiss()
+    }
+}
+
+/// How often, a name, and --sync -- the three things a subscription needs that
+/// a download does not.
+private struct SubscribeSheet: View {
+    let url: String
+    let onSubscribe: (_ everyHours: Int, _ name: String, _ sync: Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var everyHours = 24
+    @State private var name = ""
+    @State private var sync = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Subscribe")
+                .font(.title2.weight(.semibold))
+            Text("The pipeline will download what is new at \(url), with the options on this "
+                 + "form, whenever it is due — whether or not this app is open. Turn on hourly "
+                 + "checks on the Subscriptions page.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                Picker("Check", selection: $everyHours) {
+                    ForEach(SubscriptionText.intervalChoices, id: \.self) { h in
+                        Text(SubscriptionText.every(h)).tag(h)
+                    }
+                }
+                TextField("Name", text: $name,
+                          prompt: Text("Optional — shown instead of the URL"))
+                Toggle(isOn: $sync) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Stop at the first video already archived")
+                        Text("--sync. Right for a channel's Videos page, which is newest first. "
+                             + "Without it every check walks the whole listing.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Subscribe") {
+                    onSubscribe(everyHours, name, sync)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
     }
 }

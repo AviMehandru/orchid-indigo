@@ -9,7 +9,7 @@
     <!--
         THE SHELL IS THE PLATFORM'S, NOT HAND-BUILT.
 
-        NavigationView owns the pane, the three pages, the back button and the
+        NavigationView owns the pane, the four pages, the back button and the
         hamburger; its Frame owns library-to-detail. The back button needs both
         IsBackButtonVisible AND IsBackEnabled set, since the latter defaults to
         false and a button that is only visible does nothing; Alt+Left is a
@@ -43,6 +43,7 @@
             <muxc:NavigationView.MenuItems>
                 <muxc:NavigationViewItem Content="Library" Tag="library" Icon="Video" />
                 <muxc:NavigationViewItem Content="Downloads" Tag="downloads" Icon="Download" />
+                <muxc:NavigationViewItem Content="Subscriptions" Tag="subscriptions" Icon="Calendar" />
                 <muxc:NavigationViewItem Content="Health" Tag="health" Icon="Repair" />
             </muxc:NavigationView.MenuItems>
 

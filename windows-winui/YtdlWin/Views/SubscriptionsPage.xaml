@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="YtdlWin.Views.SubscriptionsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <!--
+        The Subscriptions page: the pipeline's list of sources and its hourly
+        check, shown and changed through ytdl.
+
+        Nothing on this page is stored by this app, and nothing here runs on a
+        timer. The hourly check is a Task Scheduler task the PIPELINE installs;
+        see Core/Subscriptions.cs for why the timer is not in this app.
+
+        Everything below the title is built in the code-behind, the way the
+        Health page is, because every row is rebuilt from the list each time it
+        is read. NO DOUBLE HYPHENS in these comments: an XML comment may not
+        contain two in a row, which is how DownloadsPage.xaml and
+        DetailPage.xaml each stopped compiling once already.
+    -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Padding="16" MaxWidth="{StaticResource PaneMaxWidth}"
+                    HorizontalAlignment="Left">
+
+            <TextBlock Text="Subscriptions" Style="{StaticResource TitleTextBlockStyle}"
+                       Margin="0,0,0,14" />
+
+            <StackPanel x:Name="Sections" Spacing="0" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

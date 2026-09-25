@@ -108,6 +108,17 @@ public sealed class RunOptions
     /// Each emitted as its own --ytdlp-arg.
     public List<string> YtdlpArgs { get; set; } = new();
 
+    /* Set, this is not a download of Url at all: it is "check this pipeline
+     * subscription now", and the whole argv is `--run-subscriptions ID`. The
+     * subscription carries its own stored options -- content and connection
+     * both -- so every other field is ignored when building the command,
+     * including the connection the Runner stamps on at enqueue. Url and
+     * DataRoot are kept for what the queue and history rows show and for
+     * where the session log is. Going through the queue rather than a side
+     * channel is the point: a check is then as sequential, as visible and as
+     * cancellable as any other run. See Subscriptions.cs. */
+    public string SubscriptionId { get; set; } = "";
+
     public RunOptions Clone() => new()
     {
         Url = Url, DataRoot = DataRoot, Sync = Sync, Refresh = Refresh,
@@ -121,6 +132,7 @@ public sealed class RunOptions
         CookiesFromBrowser = CookiesFromBrowser, CookiesFile = CookiesFile, Proxy = Proxy,
         LimitRate = LimitRate, Downloader = Downloader,
         YtdlpArgs = new List<string>(YtdlpArgs),
+        SubscriptionId = SubscriptionId,
     };
 
     /// <summary>Copy the five connection fields of <paramref name="conn"/>
@@ -220,6 +232,13 @@ public sealed class RunOptions
      * one YouTube id in thirty starts with "-" or "_". */
     public List<string> ToArgs()
     {
+        /* A subscription check: the pipeline has the options, stored when the
+         * subscription was made and validated again by ytdl.ps1 when it runs.
+         * Anything this form or the Connection settings added here would be a
+         * second, disagreeing copy of them. */
+        if (IsSet(SubscriptionId))
+            return new List<string> { "--run-subscriptions", SubscriptionId.Trim() };
+
         var v = new List<string> { NormalizeUrl(Url) };
 
         if (IsSet(DataRoot))
@@ -318,7 +337,11 @@ public sealed class RunOptions
         {
             var arg = i > 0 && args[i - 1] == "--proxy" ? RedactProxy(args[i]) : args[i];
             s.Append(' ');
-            if (i == 0 || arg.Any(c => c is ' ' or '\t' or '"' or '\'' or '`' or '$' or ';'))
+            /* The first argument is the URL and is always quoted -- it is the
+             * one a shell would mangle -- except in a subscription check,
+             * whose first argument is the command itself. */
+            var isUrl = i == 0 && !IsSet(SubscriptionId);
+            if (isUrl || arg.Any(c => c is ' ' or '\t' or '"' or '\'' or '`' or '$' or ';'))
             {
                 s.Append('"').Append(arg.Replace("\"", "\"\"")).Append('"');
             }
@@ -395,6 +418,7 @@ public sealed class RunOptions
         WriteIfSet(w, "proxy", Proxy);
         WriteIfSet(w, "limit_rate", LimitRate);
         WriteIfSet(w, "downloader", Downloader);
+        WriteIfSet(w, "subscription_id", SubscriptionId);
 
         w.WriteStartArray("ytdlp_args");
         foreach (var a in YtdlpArgs) w.WriteStringValue(a);
@@ -447,6 +471,7 @@ public sealed class RunOptions
         o.Proxy = e.Str("proxy") ?? "";
         o.LimitRate = e.Str("limit_rate") ?? "";
         o.Downloader = e.Str("downloader") ?? "";
+        o.SubscriptionId = e.Str("subscription_id") ?? "";
         o.YtdlpArgs = e.Strings("ytdlp_args");
         return o;
     }
