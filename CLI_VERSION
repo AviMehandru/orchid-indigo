@@ -39,7 +39,7 @@ CLI_REF=main
 #
 # Space-separated, and append-only in practice: an option listed here is one
 # some released app already sends.
-REQUIRES_YTDL_OPTIONS=--refresh --fps --sub-langs --no-chapters --sponsorblock-mark --sponsorblock-remove --cookies-from-browser --cookies --proxy --limit-rate --downloader
+REQUIRES_YTDL_OPTIONS=--refresh --fps --sub-langs --no-chapters --sponsorblock-mark --sponsorblock-remove --cookies-from-browser --cookies --proxy --limit-rate --downloader --subscribe --every --name --subscriptions --unsubscribe --edit-subscription --run-subscriptions --schedule
 
 # The archive layout version (docs/archive-layout.md in the pipeline repo)
 # every app in this repository knows how to read.

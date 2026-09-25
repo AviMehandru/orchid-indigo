@@ -108,6 +108,17 @@ typedef struct
   char *downloader;           /* --downloader native|aria2c */
 
   GPtrArray *ytdlp_args; /* char*, each emitted as its own --ytdlp-arg */
+
+  /* Set, this is not a download of @url at all: it is "check this pipeline
+   * subscription now", and the whole argv is `--run-subscriptions ID`. The
+   * subscription carries its own stored options -- content and connection
+   * both -- so every other field here is ignored when building the command,
+   * including the connection the runner stamps on at enqueue. @url and
+   * @data_root are kept for what the queue and history rows show and for
+   * where the session log is. Going through the queue rather than a side
+   * channel is the point: a check is then as sequential, as visible and as
+   * cancellable as any other run. See subscriptions.h. */
+  char *subscription_id;
 } YtdlRunOptions;
 
 YtdlRunOptions *ytdl_run_options_new (void);

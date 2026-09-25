@@ -541,6 +541,10 @@ void ytdl_register_userdata_tests (void);
  * looking at the window, and the runner accessor that says when a queue has
  * finished. */
 void ytdl_register_notify_tests (void);
+/* test_subscriptions.c -- the Subscriptions pane's reading of the pipeline's
+ * JSON and every word it shows, pinned by the fixture the other two apps
+ * share. */
+void ytdl_register_subscription_tests (void);
 
 int
 main (int argc, char **argv)
@@ -580,6 +584,7 @@ main (int argc, char **argv)
   ytdl_register_search_tests ();
   ytdl_register_userdata_tests ();
   ytdl_register_notify_tests ();
+  ytdl_register_subscription_tests ();
 
   return g_test_run ();
 }

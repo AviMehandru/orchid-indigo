@@ -130,6 +130,18 @@ entry installed (`meson install`, or copy `data/*.desktop` into
 it has no `.desktop` file for, silently, so a build run straight from the
 build tree shows nothing.
 
+**Subscriptions** — the pipeline's stored sources and its hourly check,
+read from `ytdl --subscriptions --json` each time the pane is shown. **This
+app runs no timer:** the check is a systemd user timer the pipeline installs
+(`ytdl --schedule install`), so it runs whether or not the window is open, and
+the switch at the top of the pane turns it on and off. Each row shows how
+often, when it was last checked and what that found, and when it is next due;
+**Check now** queues `ytdl --run-subscriptions ID` on the Downloads queue like
+any other run, and the menu pauses, re-times or unsubscribes it. To subscribe,
+fill in the Downloads form and press **Subscribe…** beside Add to queue — the
+subscription keeps the form's options and the current Connection settings.
+Needs `0004-orchid-ochre` or later.
+
 **Health** — the seven dependencies probed in parallel with versions and an
 8-second ceiling each, which pipeline files are actually installed (not what
 is in a checkout), `CONFIG_VERSION`, archive counts, the archive root actually

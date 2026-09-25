@@ -14,7 +14,7 @@
  * THE SHELL IS LIBADWAITA'S, NOT HAND-BUILT. AdwNavigationView owns
  * library-to-detail, which is where the back button, the gesture, the
  * animation and the Escape key all come from; AdwViewStack plus
- * AdwViewSwitcher own the three top-level pages; AdwToolbarView owns the
+ * AdwViewSwitcher own the four top-level pages; AdwToolbarView owns the
  * header, the search bar and the status line and the way they behave as the
  * content scrolls under them. An AdwBreakpoint moves the switcher to the
  * bottom on a narrow window. None of that is code here.
@@ -37,6 +37,7 @@
 #include "userdata.h"
 #include "settings.h"
 #include "style.h"
+#include "subscriptions_view.h"
 #include "verify_cache.h"
 
 typedef struct
@@ -44,13 +45,15 @@ typedef struct
   GtkWidget *window;
   GtkWidget *library;
   GtkWidget *health;
+  GtkWidget *subscriptions;
   GtkWidget *detail;
 
   GtkWidget *header;      /* AdwHeaderBar of the main page */
   GtkWidget *switcher_bar;/* AdwViewSwitcherBar, revealed when narrow */
   GtkWidget *nav;         /* AdwNavigationView: main <-> detail */
   GtkWidget *detail_page; /* AdwNavigationPage wrapping the detail view */
-  GtkWidget *stack;       /* AdwViewStack: library / downloads / health */
+  GtkWidget *stack;       /* AdwViewStack: library / downloads /
+                           subscriptions / health */
   GtkWidget *toasts;      /* AdwToastOverlay */
 
   YtdlSettings *settings;
@@ -474,6 +477,26 @@ on_page_changed (GObject *stack, GParamSpec *pspec, gpointer user_data)
   gtk_widget_set_visible (app->filter_button, on_library);
   if (!on_library)
     gtk_search_bar_set_search_mode (GTK_SEARCH_BAR (app->search_bar), FALSE);
+
+  /* Read the list every time the pane is shown: the schedule runs whether or
+   * not this app is open, and this is the only way to see what it did. */
+  if (g_strcmp0 (name, "subscriptions") == 0 && app->subscriptions != NULL)
+    ytdl_subscriptions_view_refresh (
+        YTDL_SUBSCRIPTIONS_VIEW (app->subscriptions));
+}
+
+static void
+on_subscriptions_message (GtkWidget *view, const char *text, gpointer user_data)
+{
+  toast (user_data, text);
+}
+
+static void
+on_subscribed (GtkWidget *view, const char *text, gpointer user_data)
+{
+  App *app = user_data;
+  toast (app, text);
+  ytdl_subscriptions_view_refresh (YTDL_SUBSCRIPTIONS_VIEW (app->subscriptions));
 }
 
 static void
@@ -2053,7 +2076,7 @@ build_main_page (App *app)
                     G_CALLBACK (on_select_toggled), app);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), app->select_toggle);
 
-  /* --- the three pages -------------------------------------------- */
+  /* --- the four pages --------------------------------------------- */
   app->stack = adw_view_stack_new ();
 
   app->library = ytdl_library_view_new ();
@@ -2091,6 +2114,19 @@ build_main_page (App *app)
   adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack), downloads,
                                        "downloads", "Downloads",
                                        "folder-download-symbolic");
+
+  /* The pipeline's subscriptions and its hourly check. This app runs no timer
+   * -- see subscriptions.h -- so the pane is a view onto `ytdl` and nothing
+   * more, and it is built before the Downloads view's "subscribed" signal can
+   * be connected to it. */
+  app->subscriptions = ytdl_subscriptions_view_new (app->runner);
+  g_signal_connect (app->subscriptions, "message",
+                    G_CALLBACK (on_subscriptions_message), app);
+  g_signal_connect (downloads, "subscribed", G_CALLBACK (on_subscribed), app);
+  adw_view_stack_add_titled_with_icon (ADW_VIEW_STACK (app->stack),
+                                       app->subscriptions, "subscriptions",
+                                       "Subscriptions",
+                                       "application-rss+xml-symbolic");
 
   app->health = ytdl_health_view_new (app->settings);
   ytdl_health_view_set_archive_root (YTDL_HEALTH_VIEW (app->health),

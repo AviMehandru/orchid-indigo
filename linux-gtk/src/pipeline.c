@@ -60,6 +60,7 @@ ytdl_run_options_free (YtdlRunOptions *o)
   g_free (o->proxy);
   g_free (o->limit_rate);
   g_free (o->downloader);
+  g_free (o->subscription_id);
   g_clear_pointer (&o->ytdlp_args, g_ptr_array_unref);
   g_free (o);
 }
@@ -112,6 +113,7 @@ ytdl_run_options_copy (const YtdlRunOptions *s)
   o->no_chapters = s->no_chapters;
   o->sponsorblock_mark = g_strdup (s->sponsorblock_mark);
   o->sponsorblock_remove = g_strdup (s->sponsorblock_remove);
+  o->subscription_id = g_strdup (s->subscription_id);
   ytdl_run_options_set_connection (o, s);
   if (s->ytdlp_args != NULL)
     for (guint i = 0; i < s->ytdlp_args->len; i++)
@@ -180,6 +182,18 @@ ytdl_run_options_to_args (const YtdlRunOptions *o)
 {
   g_return_val_if_fail (o != NULL, NULL);
   GPtrArray *v = g_ptr_array_new_with_free_func (g_free);
+
+  /* A subscription check: the pipeline has the options, stored when the
+   * subscription was made, and validated again by ytdl.ps1 when it runs.
+   * Anything this form or the Connection settings added here would be a
+   * second, disagreeing copy of them. */
+  if (nonempty (o->subscription_id))
+    {
+      g_ptr_array_add (v, g_strdup ("--run-subscriptions"));
+      g_ptr_array_add (v, g_strdup (o->subscription_id));
+      g_ptr_array_add (v, NULL);
+      return (GStrv) g_ptr_array_free (v, FALSE);
+    }
 
   g_ptr_array_add (v, ytdl_normalize_url (o->url));
 
@@ -359,7 +373,11 @@ ytdl_run_options_command_preview (const YtdlRunOptions *o)
               ? ytdl_redact_proxy (args[i])
               : g_strdup (args[i]);
       g_string_append_c (s, ' ');
-      if (i == 0 || strchr (shown, ' ') != NULL)
+      /* The first argument is the URL and is always quoted -- it is the one a
+       * shell would mangle -- except in a subscription check, whose first
+       * argument is the command itself. */
+      gboolean is_url = (i == 0 && !nonempty (o->subscription_id));
+      if (is_url || strchr (shown, ' ') != NULL)
         g_string_append_printf (s, "\"%s\"", shown);
       else
         g_string_append (s, shown);
@@ -787,6 +805,7 @@ ytdl_run_options_build_json (JsonBuilder *b, const YtdlRunOptions *o)
   S ("proxy", o->proxy);
   S ("limit_rate", o->limit_rate);
   S ("downloader", o->downloader);
+  S ("subscription_id", o->subscription_id);
 #undef S
 #undef B
 
@@ -864,6 +883,7 @@ ytdl_run_options_from_json (JsonObject *obj)
   GS ("proxy", o->proxy);
   GS ("limit_rate", o->limit_rate);
   GS ("downloader", o->downloader);
+  GS ("subscription_id", o->subscription_id);
 #undef GS
 #undef GB
 
@@ -1253,8 +1273,14 @@ run_one (YtdlRunner *self, YtdlRunRecord *rec)
           ? ytdl_expand_tilde (rec->opts->data_root)
           : ytdl_install_root ();
   set_str (&rec->log_path, NULL);
-  rec->log_path =
-      g_build_filename (data_root, "Archive Logs", "Logs", "download.log", NULL);
+  /* A subscription check writes its own session log -- the pipeline keeps
+   * scheduled and manual sessions apart so neither corrupts the other's
+   * per-video video_complete.log. */
+  rec->log_path = g_build_filename (
+      data_root, "Archive Logs", "Logs",
+      nonempty (rec->opts->subscription_id) ? "download.subscriptions.log"
+                                            : "download.log",
+      NULL);
 
   g_mutex_lock (&self->lock);
   g_ptr_array_set_size (self->log, 0);

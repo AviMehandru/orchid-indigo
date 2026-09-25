@@ -2,6 +2,7 @@
 
 #include "paths.h"
 #include "profiles.h"
+#include "subscriptions.h"
 #include "url_probe.h"
 
 #include <adwaita.h>
@@ -92,6 +93,9 @@ struct _YtdlDownloadsView
   GtkWidget *queue_note;
 
   GtkWidget *start, *cancel, *pause;
+  /* Stores the form as a pipeline subscription instead of running it. See
+   * on_subscribe_clicked. */
+  GtkWidget *subscribe;
   GtkWidget *progress;
   GtkWidget *stage;
 
@@ -1751,6 +1755,175 @@ on_start (GtkButton *btn, gpointer user_data)
   refresh_preview (self);
 }
 
+/* ---------------------------------------------------------------------- */
+/* Subscribe                                                              */
+/* ---------------------------------------------------------------------- */
+
+enum
+{
+  SIG_SUBSCRIBED,
+  N_DOWNLOADS_SIGNALS
+};
+
+static guint downloads_signals[N_DOWNLOADS_SIGNALS];
+
+/* The widgets inside the Subscribe dialog, looked up again when it answers. */
+typedef struct
+{
+  GtkWidget *name;
+  GtkWidget *every;
+  GtkWidget *sync;
+} SubscribeForm;
+
+static void
+on_subscribe_done (GObject *source, GAsyncResult *res, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  GError *error = NULL;
+  g_autoptr (YtdlCommandResult) r = ytdl_command_run_finish (res, &error);
+  gtk_widget_set_sensitive (self->subscribe, TRUE);
+
+  if (r == NULL)
+    {
+      show_error (self, error->message);
+      g_clear_error (&error);
+    }
+  else if (r->exit_code != 0)
+    {
+      g_autofree char *why =
+          ytdl_command_result_means_too_old (r)
+              ? g_strdup ("The installed pipeline predates subscriptions. "
+                          "Re-run orchid-ochre's setup to update it.")
+              : ytdl_command_result_message (r);
+      show_error (self, why);
+    }
+  else
+    {
+      /* The pipeline's own first line -- "Subscribed 3f2a9c1e: Name (every
+       * 1d)", or "Updated subscription ..." when the URL was already
+       * subscribed and its options have just been replaced. Which of the two
+       * happened is the pipeline's to say, not this form's to guess. */
+      g_autofree char *line = NULL;
+      if (r->out != NULL)
+        {
+          g_auto (GStrv) lines = g_strsplit (r->out, "\n", 2);
+          line = g_strdup (g_strstrip (lines[0]));
+        }
+      g_signal_emit (self, downloads_signals[SIG_SUBSCRIBED], 0,
+                     line != NULL && *line != '\0' ? line : "Subscribed.");
+    }
+  g_object_unref (self);
+}
+
+static void
+on_subscribe_response (AdwAlertDialog *dlg, const char *response,
+                       gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  SubscribeForm *f = g_object_get_data (G_OBJECT (dlg), "ytdl-form");
+  if (g_strcmp0 (response, "subscribe") != 0 || f == NULL)
+    return;
+
+  /* The form exactly as Add to queue would send it, Connection settings
+   * included: a scheduled check of a members-only playlist needs the same
+   * cookies the first download did, and nothing else is going to stamp them
+   * on at 3am. The subscription keeps the settings as they are now; saving
+   * it again from here updates them. */
+  g_autoptr (YtdlRunOptions) o = collect (self);
+  {
+    g_autoptr (YtdlRunOptions) conn = ytdl_settings_connection (self->settings);
+    ytdl_run_options_set_connection (o, conn);
+  }
+  o->sync = adw_switch_row_get_active (ADW_SWITCH_ROW (f->sync));
+  guint pick = adw_combo_row_get_selected (ADW_COMBO_ROW (f->every));
+  int hours = pick < ytdl_subscription_interval_count
+                  ? ytdl_subscription_interval_choices[pick]
+                  : 24;
+  g_autofree char *name =
+      g_strstrip (g_strdup (gtk_editable_get_text (GTK_EDITABLE (f->name))));
+
+  g_auto (GStrv) args = ytdl_subscribe_args (o, hours, name);
+  gtk_widget_set_sensitive (self->subscribe, FALSE);
+  ytdl_command_run_async ((const char *const *) args, NULL, on_subscribe_done,
+                          g_object_ref (self));
+}
+
+/* Subscribe is on THIS pane rather than the Subscriptions one because this is
+ * where every option a download can take already has a control, and where the
+ * command line is shown. A second form on the Subscriptions pane would be a
+ * second place for the two to disagree. The dialog asks only what a download
+ * does not: how often, a name, and --sync -- which is on by default here
+ * whatever the form says, because without it every check walks the whole
+ * channel. */
+static void
+on_subscribe_clicked (GtkButton *btn, gpointer user_data)
+{
+  YtdlDownloadsView *self = user_data;
+  g_autofree char *url =
+      g_strstrip (g_strdup (gtk_editable_get_text (GTK_EDITABLE (self->url))));
+  if (*url == '\0')
+    {
+      show_error (self, "Enter the channel or playlist URL to subscribe to "
+                        "first. Its options come from this form.");
+      return;
+    }
+
+  AdwDialog *dlg = adw_alert_dialog_new (
+      "Subscribe",
+      "The pipeline will download what is new at this URL, with the options "
+      "on this form, whenever it is due — whether or not this app is open. "
+      "Turn on hourly checks on the Subscriptions pane.");
+  adw_alert_dialog_add_responses (ADW_ALERT_DIALOG (dlg), "cancel", "_Cancel",
+                                  "subscribe", "_Subscribe", NULL);
+  adw_alert_dialog_set_response_appearance (ADW_ALERT_DIALOG (dlg),
+                                            "subscribe",
+                                            ADW_RESPONSE_SUGGESTED);
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "subscribe");
+  adw_alert_dialog_set_close_response (ADW_ALERT_DIALOG (dlg), "cancel");
+
+  SubscribeForm *f = g_new0 (SubscribeForm, 1);
+  GtkWidget *list = gtk_list_box_new ();
+  gtk_list_box_set_selection_mode (GTK_LIST_BOX (list), GTK_SELECTION_NONE);
+  gtk_widget_add_css_class (list, "boxed-list");
+
+  f->every = adw_combo_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (f->every), "Check");
+  GtkStringList *labels = gtk_string_list_new (NULL);
+  guint daily = 0;
+  for (gsize i = 0; i < ytdl_subscription_interval_count; i++)
+    {
+      g_autofree char *l =
+          ytdl_subscription_every_label (ytdl_subscription_interval_choices[i]);
+      gtk_string_list_append (labels, l);
+      if (ytdl_subscription_interval_choices[i] == 24)
+        daily = (guint) i;
+    }
+  adw_combo_row_set_model (ADW_COMBO_ROW (f->every), G_LIST_MODEL (labels));
+  g_object_unref (labels);
+  adw_combo_row_set_selected (ADW_COMBO_ROW (f->every), daily);
+  gtk_list_box_append (GTK_LIST_BOX (list), f->every);
+
+  f->name = adw_entry_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (f->name),
+                                 "Name — optional, shown instead of the URL");
+  gtk_list_box_append (GTK_LIST_BOX (list), f->name);
+
+  f->sync = adw_switch_row_new ();
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (f->sync),
+                                 "Stop at the first video already archived");
+  adw_action_row_set_subtitle (
+      ADW_ACTION_ROW (f->sync),
+      "--sync. Right for a channel's Videos page, which is newest first. "
+      "Without it every check walks the whole listing.");
+  adw_switch_row_set_active (ADW_SWITCH_ROW (f->sync), TRUE);
+  gtk_list_box_append (GTK_LIST_BOX (list), f->sync);
+
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), list);
+  g_object_set_data_full (G_OBJECT (dlg), "ytdl-form", f, g_free);
+  g_signal_connect (dlg, "response", G_CALLBACK (on_subscribe_response), self);
+  adw_dialog_present (dlg, GTK_WIDGET (self));
+}
+
 static void
 on_cancel (GtkButton *btn, gpointer user_data)
 {
@@ -2088,6 +2261,12 @@ static void
 ytdl_downloads_view_class_init (YtdlDownloadsViewClass *klass)
 {
   G_OBJECT_CLASS (klass)->dispose = ytdl_downloads_view_dispose;
+
+  /* The pipeline's confirmation, for main.c to toast and to tell the
+   * Subscriptions pane to read its list again. */
+  downloads_signals[SIG_SUBSCRIBED] =
+      g_signal_new ("subscribed", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                    0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 GtkWidget *
@@ -2187,8 +2366,20 @@ ytdl_downloads_view_new (YtdlRunner *runner, YtdlSettings *settings)
   }
   gtk_widget_add_css_class (self->start, "suggested-action");
   g_signal_connect (self->start, "clicked", G_CALLBACK (on_start), self);
+
+  self->subscribe = gtk_button_new_with_label ("Subscribe…");
+  gtk_widget_set_tooltip_text (
+      self->subscribe,
+      "Keep this URL archived: store it with these options as a pipeline "
+      "subscription, checked on a schedule instead of downloaded now");
+  g_signal_connect (self->subscribe, "clicked",
+                    G_CALLBACK (on_subscribe_clicked), self);
+
+  GtkWidget *dl_actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_box_append (GTK_BOX (dl_actions), self->subscribe);
+  gtk_box_append (GTK_BOX (dl_actions), self->start);
   adw_preferences_group_set_header_suffix (ADW_PREFERENCES_GROUP (dgroup),
-                                           self->start);
+                                           dl_actions);
 
   self->url = adw_entry_row_new ();
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self->url),
